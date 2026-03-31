@@ -1,0 +1,32 @@
+# Bank Card OCR System - Python 依赖包
+# 
+# 安装方法:
+#   pip install -r requirements.txt
+
+# 图像处理
+opencv-python>=4.5.0
+Pillow>=8.0.0
+numpy>=1.19.0
+
+# .NET 互操作（用于 Sapera SDK）
+pythonnet>=2.5.0
+
+# GUI（通常 Python 自带，但某些环境可能需要）
+# tkinter  # 通常不需要单独安装
+
+# 可选：图像增强
+# scikit-image>=0.18.0
+
+# 可选：OCR 引擎（如果需要文字识别）
+# pytesseract>=0.3.0
+# easyocr>=1.4.0
+
+# 可选：数据处理
+# pandas>=1.2.0
+
+# 可选：日志
+# loguru>=0.5.0
+
+# 测试框架
+pytest>=7.0.0
+hypothesis>=6.0.0  # 属性测试库

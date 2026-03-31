@@ -1,0 +1,18 @@
+{
+    "custom_fields": [
+        "test2",
+        "23",
+        "阿凡达的撒",
+        "打法"
+    ],
+    "all_fields": [
+        "CardNumber",
+        "Name",
+        "Date",
+        "FirstDigitAnchor",
+        "test2",
+        "23",
+        "阿凡达的撒",
+        "打法"
+    ]
+}

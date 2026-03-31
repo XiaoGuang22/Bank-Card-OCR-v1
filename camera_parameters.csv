@@ -1,0 +1,183 @@
+参数名称,当前值,功能说明
+Acquisition Mode,Not Enabled,采集模式：控制相机的采集方式（连续采集/单帧采集/多帧采集）
+Acquisition Start,Not Enabled,采集启动：开始图像采集的命令
+Acquisition Stop,Not Enabled,采集停止：停止图像采集的命令
+Acquisition Abort,Not Enabled,采集中止：强制中止当前采集的命令
+Acquisition Frame Count,Not Enabled,采集帧数：设置要采集的图像帧数量
+Acquisition Frame Rate (Raw),13831121,原始帧率值：相机内部寄存器的帧率原始数值（范围：100-15180，单位：mHz）
+Acquisition Frame Rate (in Hz),13831.121094,帧率（赫兹）：相机实际采集图像的频率，单位为帧/秒（范围：0.1-15.18 Hz）
+Trigger Selector,FrameStart,触发选择器：选择触发的类型（帧开始触发/行开始触发）
+Trigger Mode,Off,触发模式：控制是否启用触发功能（Off=自由运行，On=触发模式）
+Trigger Software,Not Enabled,软件触发：通过软件命令执行一次触发采集
+Trigger Source,Not Enabled,触发源：选择触发信号的来源（软件/Line0/Line1/外部触发）
+Trigger Activation,Not Enabled,触发激活方式：设置触发信号的激活条件（上升沿/下降沿/高电平/低电平）
+Trigger Overlap (Raw),Not Enabled,触发重叠：允许在曝光期间接收新的触发信号
+Trigger Delay (Raw),Not Enabled,触发延迟：从接收到触发信号到开始曝光的延迟时间（微秒）
+Exposure Mode,Not Enabled,曝光模式：控制曝光时间的方式（定时曝光/触发宽度曝光）
+Exposure Alignment,Not Enabled,曝光对齐：设置曝光时间的对齐方式
+Exposure Time (in us),25000.0,曝光时间（微秒）：相机传感器的曝光时间，影响图像亮度（范围：35-166566 μs，即0.035-166.566 ms）
+Exposure Time (Raw),25000,曝光时间原始值：曝光时间的寄存器原始数值（范围：35-166566）
+Sensor Width,1600,传感器宽度：相机传感器的像素宽度
+Sensor Height,1200,传感器高度：相机传感器的像素高度
+Maximum Width,1600,最大宽度：相机支持的最大图像宽度
+Maximum Height,1200,最大高度：相机支持的最大图像高度
+Width,1600,图像宽度：当前设置的输出图像宽度（像素）
+Height,1200,图像高度：当前设置的输出图像高度（像素）
+Offset X,0,X偏移：图像感兴趣区域（ROI）的水平偏移量
+Offset Y,0,Y偏移：图像感兴趣区域（ROI）的垂直偏移量
+PixelBits,1600,像素位数：每个像素的位深度设置
+Binning Horizontal,1,水平合并：水平方向像素合并倍数（1=不合并）
+Binning Vertical,1,垂直合并：垂直方向像素合并倍数（1=不合并）
+Horizontal Flip,False,水平翻转：是否水平镜像翻转图像
+Reverse X,None,X反转：X方向图像反转设置
+Pixel Coding,Raw,像素编码：图像数据的编码格式（Raw/RGB/YUV等）
+Pixel Size,-,像素尺寸：单个像素的物理尺寸
+Pixel Format,Mono8,像素格式：图像的像素数据格式（Mono8=8位灰度图）
+Pixel Dynamic Range Min,0,像素动态范围最小值：像素值的最小范围
+Pixel Dynamic Range Max,1,像素动态范围最大值：像素值的最大范围
+Noise Reduction,True,降噪：是否启用图像降噪功能
+Test Image Selector,Off,测试图像选择器：选择是否输出测试图像（用于调试）
+Line Selector,Line1,线路选择器：选择要配置的输入/输出线路（Line1/Line2等）
+Line Mode,Input,线路模式：设置选中线路的工作模式（Input=输入，Output=输出）
+Input Line Polarity,Active High,输入线路极性：输入信号的有效电平（Active High=高电平有效）
+Input Line Debouncing Period,0,输入线路去抖动周期：输入信号的去抖动时间（微秒），用于过滤干扰
+Line Status,True,线路状态：当前线路的实时状态（True=高电平，False=低电平）
+Output Line Mode,Not Enabled,输出线路模式：输出线路的工作模式设置
+Output Line Event Source,Not Enabled,输出线路事件源：触发输出信号的事件源
+Output Line Pulse Polarity,Not Enabled,输出线路脉冲极性：输出脉冲信号的极性（高电平/低电平）
+Output Line Pulse Delay,Not Enabled,输出线路脉冲延迟：输出脉冲的延迟时间（微秒）
+Output Line Pulse Duration,Not Enabled,输出线路脉冲持续时间：输出脉冲的持续时间（微秒）
+Output Line Value,Not Enabled,输出线路值：手动设置输出线路的电平值（高/低）
+Counter Selector,GigE Vision Timestamp,计数器选择器：选择要配置的计数器（GigE Vision时间戳/其他计数器）
+Counter Event Source,Internal Clock (1us),计数器事件源：计数器的时钟源（内部时钟1微秒/其他事件）
+Counter Duration,0,计数器持续时间：计数器的持续时间或计数周期
+Counter Reset Mode,Software,计数器复位模式：计数器的复位方式（软件复位/硬件复位）
+Counter Reset Line,Not Enabled,计数器复位线路：用于复位计数器的硬件线路
+Counter Reset,Press...,计数器复位：执行计数器复位命令（按钮）
+AcquisitionEnd Event,36867,采集结束事件：采集结束时触发的事件ID
+Frame Trigger Data,-,帧触发数据：帧触发事件的相关数据
+Exposure Start Data,-,曝光开始数据：曝光开始事件的相关数据
+Exposure End Data,-,曝光结束数据：曝光结束事件的相关数据
+Readout Start Data,-,读出开始数据：图像读出开始事件的相关数据
+Readout End Data,-,读出结束数据：图像读出结束事件的相关数据
+Acquisition End Data,-,采集结束数据：采集结束事件的相关数据
+Line 1 Data,-,线路1数据：线路1事件的相关数据
+Line 2 Data,-,线路2数据：线路2事件的相关数据
+Line 3 Data,-,线路3数据：线路3事件的相关数据
+Line 4 Data,-,线路4数据：线路4事件的相关数据
+Invalid Frame Trigger Data,-,无效帧触发数据：无效帧触发事件的相关数据
+Frame Skipped Data,-,跳帧数据：跳帧事件的相关数据
+Gain,3.12(x07),增益：图像信号的放大倍数，用于调整图像亮度（当前3.12倍）
+Gain (Raw),99,增益原始值：增益的寄存器原始数值
+Black Level,0.0,黑电平：图像的黑色基准电平，用于调整图像的最暗部分
+Black Level (Raw),0,黑电平原始值：黑电平的寄存器原始数值
+LUT Selector,Luminance,LUT选择器：选择要配置的查找表类型（亮度/颜色等）
+LUT Enable,False,LUT启用：是否启用查找表功能
+LUT Index,0,LUT索引：查找表中的索引位置
+LUT Value,0,LUT值：查找表中指定索引位置的映射值
+Shading Correction Mode,Disable,阴影校正模式：是否启用阴影校正功能（用于补偿镜头边缘亮度衰减）
+Pixel Y Coordinate,Not Enabled,像素Y坐标：阴影校正中的像素Y坐标位置
+Pixel X Coordinate,Not Enabled,像素X坐标：阴影校正中的像素X坐标位置
+Replace Pixel,Not Enabled,替换像素：用于阴影校正的像素替换值
+Gain,Not Enabled,增益：阴影校正中的增益调整参数
+Offset,Not Enabled,偏移：阴影校正中的偏移调整参数
+Payload Size,1920000,有效载荷大小：每帧图像数据的字节大小
+GigE Vision Major Version,1,GigE Vision主版本号：GigE Vision协议的主版本
+GigE Vision Minor Version,2,GigE Vision次版本号：GigE Vision协议的次版本
+GigE Vision Is Device Bigendian,False,GigE Vision设备字节序：设备是否使用大端字节序
+GigE Vision Character Set,UTF8,GigE Vision字符集：设备使用的字符编码集
+GigE Vision Interface Selector,0,GigE Vision接口选择器：选择要配置的网络接口
+Interface MAC Address,0x00000000110D123131,接口MAC地址：网络接口的MAC物理地址
+DHCP Is Supported,True,DHCP支持：是否支持DHCP自动获取IP地址
+DHCP Is Supported,True,DHCP支持：是否支持DHCP功能（重复项）
+Persistent IP Is Supported,True,持久IP支持：是否支持持久IP地址配置
+Current Camera IP Configuration,PersistentIP,当前相机IP配置：当前使用的IP配置方式（持久IP）
+Current IP Address,0x00000000L 0xA82094,当前IP地址：相机当前的IP地址
+Current Subnet Mask,0x00000000L 0xFFFFFF00,当前子网掩码：相机当前的子网掩码
+Current Default Gateway,0x000000000000000C,当前默认网关：相机当前的默认网关地址
+Persistent IP Address,0x000000000L 0xA82094,持久IP地址：相机配置的持久IP地址
+Persistent Subnet Mask,0x00000000FF3FFF00,持久子网掩码：相机配置的持久子网掩码
+Persistent Default Gateway,0x000000000000000C,持久默认网关：相机配置的持久默认网关
+First URL,Local/Genie/M1600_1_cc.xml;a900;28b3,第一URL：相机配置文件的URL地址
+Second URL,http://www.dalsa.com/digital/products/cf_am...,第二URL：相机在线文档的URL地址
+Number of Interfaces,1,接口数量：相机支持的网络接口数量
+Number of Message Channel,1,消息通道数量：相机支持的消息通道数量
+Number of Stream Channel,1,流通道数量：相机支持的数据流通道数量
+Number of Action Signals Supported,1,支持的动作信号数量：相机支持的动作信号数量
+Serial Number Supported,True,序列号支持：是否支持序列号功能
+EVENTDATA Supported,True,事件数据支持：是否支持事件数据功能
+EVENT Supported,True,事件支持：是否支持事件功能
+PACKETRESEND Supported,True,数据包重发支持：是否支持数据包重发功能
+WRITEMEM Supported,True,写内存支持：是否支持写内存功能
+Concatenation Supported,True,连接支持：是否支持数据包连接功能
+Heartbeat Timeout,3000,心跳超时：心跳信号的超时时间（毫秒）
+Timestamp Frequency,1000000,时间戳频率：时间戳计数器的频率（Hz）
+User Set Default Selector,UserSet1,用户设置默认选择器：选择开机时加载的默认用户设置
+User Set Selector,Factory,用户设置选择器：选择要操作的用户设置（出厂设置/用户设置1/2等）
+User Set Load,Press...,用户设置加载：加载选中的用户设置（按钮）
+User Set Save,Not Enabled,用户设置保存：保存当前配置到选中的用户设置
+Image Timeout Enable,True,图像超时启用：是否启用图像接收超时检测
+Image Timeout (in seconds),0.7,图像超时时间：图像接收超时时间（秒）
+Inter-Packet Timeout Enable,True,包间超时启用：是否启用数据包间超时检测
+Inter-Packet Timeout (in seconds),0.045,包间超时时间：数据包间超时时间（秒）
+Resend Request Enable,True,重发请求启用：是否启用数据包重发请求功能
+Resend Request Timeout (in seconds),0.045,重发请求超时：重发请求的超时时间（秒）
+Maximum Resend Requests (in requests),3,最大重发请求数：单个数据包的最大重发请求次数
+Maximum Packet Resend (in %),100.0,最大数据包重发百分比：允许重发的数据包最大百分比
+System TransferStop Detection Method,Automatic,系统传输停止检测方法：检测传输停止的方法（自动/手动）
+System TransferStop Time (in us),200000.0,系统传输停止时间：判定传输停止的时间阈值（微秒）
+Command Timeout (in ms),250,命令超时时间：命令执行的超时时间（毫秒）
+Command Retry Count (in retries),3,命令重试次数：命令失败后的重试次数
+Output Pixel Format,Pass-Through,输出像素格式：输出图像的像素格式（直通/转换）
+Log Messages Enable,True,日志消息启用：是否启用日志消息记录
+Reset Counters,Press...,重置计数器：重置所有统计计数器（按钮）
+Update Counters,Press...,更新计数器：更新统计计数器的值（按钮）
+Frames Received (in frames),0,接收帧数：成功接收的图像帧总数
+Frames Delivered (in frames),0,交付帧数：成功交付给应用程序的图像帧数
+Frames Trashed (in frames),0,丢弃帧数：被丢弃的图像帧数
+Frames Incomplete (in frames),0,不完整帧数：接收不完整的图像帧数
+Frames Timeout (in frames),0,超时帧数：接收超时的图像帧数
+Frames Packets Missing Unavailable,0,帧数据包丢失不可用：数据包丢失且无法重发的帧数
+Frames Packets Missing Threshold,0,帧数据包丢失阈值：触发丢包警告的阈值
+Frames Resend Requests Threshold,0,帧重发请求阈值：触发重发请求警告的阈值
+Frames Lost In Device (in frames),0,设备内丢失帧数：在相机设备内部丢失的帧数
+Frames Resend Request Queue Overrun,0,帧重发请求队列溢出：重发请求队列溢出次数
+Frames Payload Type Not Supported,0,帧载荷类型不支持：不支持的载荷类型帧数
+Frames Payload Processing Failed,0,帧载荷处理失败：载荷处理失败的帧数
+Frame Packet Count (in packets),0,帧数据包计数：每帧包含的数据包数量
+Packets Received (in packets),0,接收数据包数：成功接收的数据包总数
+Packets Missing (in packets),0,丢失数据包数：丢失的数据包总数
+Packets Resend Received (in packets),0,重发接收数据包数：通过重发机制接收的数据包数
+Packets Resend Requests (in requests),0,数据包重发请求数：发出的重发请求总数
+Packets Resend Request Timeout,0,数据包重发请求超时：重发请求超时次数
+Frames Lost In Reception (in frames),0,接收中丢失帧数：在接收过程中丢失的帧数
+Frames Reception Storage Overrun,0,帧接收存储溢出：接收缓冲区溢出次数
+Frames Reception Queue Overrun,0,帧接收队列溢出：接收队列溢出次数
+Frames User Message Queue Overrun,0,帧用户消息队列溢出：用户消息队列溢出次数
+Frames Reception Storage In Use,0,帧接收存储使用量：当前使用的接收存储量
+Frames Reception Storage In Use Max,0,帧接收存储最大使用量：接收存储的最大使用量
+Frames Reception Storage Size,1024,帧接收存储大小：接收存储的总大小
+Frames Reception Queue In Use,0,帧接收队列使用量：当前使用的接收队列数量
+Frames Reception Queue In Use Max,0,帧接收队列最大使用量：接收队列的最大使用量
+Frames Reception Queue Size,1028,帧接收队列大小：接收队列的总大小
+Frames Reception Time (in us),0,帧接收时间：接收一帧的时间（微秒）
+Frames Reception Time Min (in us),0,帧接收最小时间：接收一帧的最小时间（微秒）
+Frames Reception Time Max (in us),0,帧接收最大时间：接收一帧的最大时间（微秒）
+Frames Processing Time (in us),0,帧处理时间：处理一帧的时间（微秒）
+Frames Processing Time Min (in us),0,帧处理最小时间：处理一帧的最小时间（微秒）
+Frames Processing Time Max (in us),0,帧处理最大时间：处理一帧的最大时间（微秒）
+Frames Delivery Time (in us),0,帧交付时间：交付一帧的时间（微秒）
+Frames Delivery Time Min (in us),0,帧交付最小时间：交付一帧的最小时间（微秒）
+Frames Delivery Time Max (in us),0,帧交付最大时间：交付一帧的最大时间（微秒）
+Frames Callback Time (in us),0,帧回调时间：回调函数执行时间（微秒）
+Frames Callback Time Min (in us),0,帧回调最小时间：回调函数最小执行时间（微秒）
+Frames Callback Time Max (in us),0,帧回调最大时间：回调函数最大执行时间（微秒）
+Packets Duplicated (in packets),0,重复数据包数：接收到的重复数据包数
+Packets Timeout (in packets),0,超时数据包数：接收超时的数据包数
+Packets Unavailable (in packets),0,不可用数据包数：不可用的数据包数
+Packets Not Yet Available (in packets),0,尚未可用数据包数：尚未到达的数据包数
+Packets Temporarily Unavailable,0,临时不可用数据包数：临时不可用的数据包数
+Packets Rejected (in packets),0,拒绝数据包数：被拒绝的数据包数
+Buffers Queue In Use (in buffers),0,缓冲区队列使用量：当前使用的缓冲区数量
+Buffers Queue In Use Max (in buffers),0,缓冲区队列最大使用量：缓冲区队列的最大使用量
+Buffer Queue Size (in buffers),4,缓冲区队列大小：缓冲区队列的总大小

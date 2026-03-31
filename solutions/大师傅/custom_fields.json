@@ -1,0 +1,20 @@
+{
+    "custom_fields": [
+        "字段1",
+        "字段2",
+        "在",
+        "asd",
+        "adf"
+    ],
+    "all_fields": [
+        "CardNumber",
+        "Name",
+        "Date",
+        "FirstDigitAnchor",
+        "字段1",
+        "字段2",
+        "在",
+        "asd",
+        "adf"
+    ]
+}
