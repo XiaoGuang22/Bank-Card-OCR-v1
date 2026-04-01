@@ -1,0 +1,59 @@
+{
+    "fields": {
+        "CardNumber": [
+            242,
+            497,
+            1096,
+            132
+        ],
+        "Name": [
+            265,
+            658,
+            528,
+            200
+        ],
+        "Date": [
+            889,
+            652,
+            255,
+            76
+        ]
+    },
+    "image_size": {
+        "width": 1600,
+        "height": 1200
+    },
+    "strategy": "anchor_based",
+    "anchor_rect": [
+        264,
+        535,
+        45,
+        68
+    ],
+    "anchor_search_area": [
+        231,
+        457,
+        223,
+        220
+    ],
+    "field_props": {
+        "CardNumber": {
+            "enabled": true,
+            "min_confidence": 66,
+            "expected_chars": 0,
+            "ignore_space": false
+        },
+        "Name": {
+            "enabled": true,
+            "min_confidence": 75,
+            "expected_chars": 0,
+            "ignore_space": false
+        },
+        "Date": {
+            "enabled": true,
+            "min_confidence": 75,
+            "expected_chars": 0,
+            "ignore_space": false
+        }
+    }
+}

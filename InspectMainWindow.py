@@ -1438,6 +1438,20 @@ class InspectMainWindow:
         
         # 运行界面引用
         self.run_interface = None
+
+        # 运行统计持久化（程序生命周期内保持）
+        self.persistent_stats = {
+            "pass": 0,
+            "reject": 0,
+            "recycle": 0,
+            "image_detection_count": 0
+        }
+        # 最近一次 OCR 识别结果（供控制界面 AppVar 树显示）
+        self.ocr_last_results = {}
+
+        # OCR 字段信息（从 SolutionMakerFrame 同步过来）
+        self.ocr_field_types = []        # 用户定义的字段名列表
+        self.ocr_last_results = {}       # 最近一次识别结果 {field_name: {value, result, confidence}}
         
         # 保存进入工具界面前的画布状态
         self.before_tool_canvas_state = {
@@ -2236,25 +2250,35 @@ class InspectMainWindow:
         # Logo
         tk.Label(content, text="MINGSEN\nOCR", font=("Arial", 16, "bold"), fg="#0055A4", bg="white", justify=tk.LEFT).pack(anchor="w", pady=(0, 20))
 
-        # 双列容器
-        dual_pane = tk.Frame(content, bg="white")
-        dual_pane.pack(fill=tk.X, pady=10)
-        dual_pane.grid_columnconfigure(0, weight=1)
-        dual_pane.grid_columnconfigure(1, weight=1)
+        # 双列容器 → 单一组件，四个按钮 2×2 网格
+        btn_frame = ttk.LabelFrame(content, text="功能选择", style="White.TLabelframe")
+        btn_frame.pack(fill=tk.X, pady=10)
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(1, weight=1)
 
-        # 左列按钮
-        lf_run = ttk.LabelFrame(dual_pane, text="选择并运行", style="White.TLabelframe")
-        lf_run.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
-        self._create_img_btn(lf_run, "解决方案", self.icons['folder'], command=self._show_solution_disabled_message)
-        self._create_img_btn(lf_run, "运行", self.icons['run'], command=self.show_run_interface)
-        
-        # 右列按钮 - 操作员不显示此列，管理员和技术员显示
+        # 第一行：解决方案、传感器（管理员/技术员）
+        sol_btn = self._create_img_btn(btn_frame, "解决方案", self.icons['folder'], command=self._show_solution_disabled_message, return_btn=True)
+        if sol_btn:
+            sol_btn.grid(row=0, column=0, sticky="nsew", padx=3, pady=3)
+
         if self.role in ["管理员", "技术员"]:
-            lf_mod = ttk.LabelFrame(dual_pane, text="选择或者修改", style="White.TLabelframe")
-            lf_mod.grid(row=0, column=1, sticky="nsew", padx=(3, 0))
-            self._create_img_btn(lf_mod, "传感器", self.icons['sensor'], command=self.show_sensor_settings)
-            self._create_img_btn(lf_mod, "工具", self.icons['tools'], command=self.show_tool_interface)
-            self._create_img_btn(lf_mod, "控制", self.icons['control'], command=self.show_tcp_settings)
+            sensor_btn = self._create_img_btn(btn_frame, "传感器", self.icons['sensor'], command=self.show_sensor_settings, return_btn=True)
+            if sensor_btn:
+                sensor_btn.grid(row=0, column=1, sticky="nsew", padx=3, pady=3)
+
+            # 第二行：工具、控制
+            tool_btn = self._create_img_btn(btn_frame, "工具", self.icons['tools'], command=self.show_tool_interface, return_btn=True)
+            if tool_btn:
+                tool_btn.grid(row=1, column=0, sticky="nsew", padx=3, pady=3)
+
+            ctrl_btn = self._create_img_btn(btn_frame, "控制", self.icons['control'], command=self.show_tcp_settings, return_btn=True)
+            if ctrl_btn:
+                ctrl_btn.grid(row=1, column=1, sticky="nsew", padx=3, pady=3)
+
+        # 第三行：运行
+        run_btn = self._create_img_btn(btn_frame, "运行", self.icons['run'], command=self.show_run_interface, return_btn=True)
+        if run_btn:
+            run_btn.grid(row=2, column=0, sticky="nsew", padx=3, pady=3)
 
         # 底部按钮
         tk.Frame(content, height=30, bg="white").pack()
@@ -2465,9 +2489,12 @@ class InspectMainWindow:
         self._tcp_settings_frame = TcpSettingsFrame(
             self.sidebar_frame, self.tcp_service, self.script_engine,
             save_callback=self._save_scripts_to_solution,
-            back_callback=self._on_tcp_settings_back
+            back_callback=self._on_tcp_settings_back,
+            main_window=self
         )
         self._tcp_settings_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # 刷新 OCR 节点（可能已有识别结果）
+        self._tcp_settings_frame._rebuild_ocr_nodes()
 
         # 右侧下方：脚本编辑面板（管理等式执行顺序）
         self._show_script_bottom_panel()
@@ -2560,7 +2587,7 @@ class InspectMainWindow:
                       cursor="hand2", bg="#F0F0F0", padx=10, pady=3)
         tk.Button(bot_bar, text="导出", command=self._on_script_export, **bot_kw).pack(side=tk.LEFT, padx=(0, 4))
         tk.Button(bot_bar, text="导入", command=self._on_script_import, **bot_kw).pack(side=tk.LEFT, padx=(0, 4))
-        tk.Button(bot_bar, text="自由编辑",
+        tk.Button(bot_bar, text="插入等式",
                   bg="#5B9BD5", fg="white",
                   font=("Microsoft YaHei UI", 9), relief="raised",
                   cursor="hand2", padx=10, pady=3,
@@ -2741,30 +2768,231 @@ class InspectMainWindow:
         self._sync_listbox_to_engine()
 
     def _on_script_free_edit(self):
-        trigger = self._script_trigger_var.get()
-        code = "\n".join(self._script_listbox.get(0, tk.END))
+        """插入等式对话框：双击左侧 AppVar 大树插入变量名"""
         win = tk.Toplevel(self.root)
-        win.title(f"自由编辑 — {trigger}")
-        win.geometry("600x400")
-        win.grab_set()
-        txt = tk.Text(win, font=("Courier New", 11), undo=True)
-        txt.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        txt.insert("1.0", code)
+        win.title("插入等式")
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.configure(bg="white")
 
-        def _apply():
-            new_code = txt.get("1.0", tk.END).rstrip("\n")
-            self._script_listbox.delete(0, tk.END)
-            for line in new_code.splitlines():
-                self._script_listbox.insert(tk.END, line)
+        x = self.root.winfo_x() + (self.root.winfo_width() - 420) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 220) // 2
+        win.geometry(f"420x420+{x}+{y}")
+
+        bg = "white"
+
+        # 获取大树引用（稍后绑定/禁用）
+        big_tree = None
+        if hasattr(self, '_tcp_settings_frame') and self._tcp_settings_frame:
+            big_tree = self._tcp_settings_frame._var_tree
+
+        lf = tk.LabelFrame(win, text="等式赋值", font=("Microsoft YaHei UI", 9, "bold"),
+                           bg=bg, padx=10, pady=8)
+        lf.pack(fill=tk.X, padx=10, pady=(10, 6))
+
+        # If 条件行
+        cond_row = tk.Frame(lf, bg=bg)
+        cond_row.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(cond_row, text="If (", bg=bg, font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+        var_cond = tk.StringVar()
+        entry_cond = tk.Entry(cond_row, textvariable=var_cond, font=("Courier New", 9), width=28)
+        entry_cond.pack(side=tk.LEFT, padx=4)
+        tk.Label(cond_row, text=")", bg=bg, font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+        tk.Button(cond_row, text="清除", font=("Microsoft YaHei UI", 8), bg="#F0F0F0",
+                  relief=tk.RAISED, cursor="hand2",
+                  command=lambda: var_cond.set("")).pack(side=tk.LEFT, padx=(6, 0))
+
+        # 变量名 = 值 行
+        assign_row = tk.Frame(lf, bg=bg)
+        assign_row.pack(fill=tk.X, pady=(0, 6))
+        var_name = tk.StringVar()
+        var_value = tk.StringVar()
+        entry_name = tk.Entry(assign_row, textvariable=var_name, font=("Courier New", 9), width=16)
+        entry_name.pack(side=tk.LEFT)
+        tk.Label(assign_row, text=" = ", bg=bg, font=("Courier New", 9)).pack(side=tk.LEFT)
+        entry_value = tk.Entry(assign_row, textvariable=var_value, font=("Courier New", 9), width=16)
+        entry_value.pack(side=tk.LEFT)
+
+        # 预览行
+        preview_var = tk.StringVar(value="")
+        tk.Label(lf, textvariable=preview_var, bg="#F8F8F8", fg="#333",
+                 font=("Courier New", 9), anchor="w", relief=tk.SUNKEN, padx=4
+                 ).pack(fill=tk.X)
+
+        tk.Button(lf, text="添加到脚本", font=("Microsoft YaHei UI", 8, "bold"),
+                  bg="#4CAF50", fg="white", relief=tk.RAISED, cursor="hand2",
+                  command=lambda: _insert()
+                  ).pack(anchor="e", pady=(4, 0))
+
+        def _update_preview(*_):
+            cond = var_cond.get().strip()
+            name = var_name.get().strip()
+            val = var_value.get().strip()
+            if cond and name:
+                preview_var.set(f"if ({cond}): {name} = {val}")
+            elif name:
+                preview_var.set(f"{name} = {val}")
+            else:
+                preview_var.set("")
+
+        var_cond.trace_add("write", _update_preview)
+        var_name.trace_add("write", _update_preview)
+        var_value.trace_add("write", _update_preview)
+
+        # 记录当前焦点输入框
+        last_focused = [entry_name]
+        entry_cond.bind("<FocusIn>", lambda e: last_focused.__setitem__(0, entry_cond))
+        entry_name.bind("<FocusIn>", lambda e: last_focused.__setitem__(0, entry_name))
+        entry_value.bind("<FocusIn>", lambda e: last_focused.__setitem__(0, entry_value))
+
+        # 提示标签
+        tk.Label(win, text="← 双击左侧 AppVar 树中的变量，插入到当前输入框",
+                 bg=bg, fg="#888", font=("Microsoft YaHei UI", 8)
+                 ).pack(anchor="w", padx=12, pady=(0, 6))
+
+        # ── 字符串格式化 ──
+        str_lf = tk.LabelFrame(win, text="字符串格式化", font=("Microsoft YaHei UI", 9),
+                               bg=bg, padx=10, pady=6)
+        str_lf.pack(fill=tk.X, padx=10, pady=(0, 6))
+
+        # ── 字符串格式化 ──
+        str_counter = [1]
+
+        str_lf = tk.LabelFrame(win, text="字符串格式化", font=("Microsoft YaHei UI", 9),
+                               bg=bg, padx=10, pady=6)
+        str_lf.pack(fill=tk.X, padx=10, pady=(0, 6))
+
+        str_top = tk.Frame(str_lf, bg=bg)
+        str_top.pack(fill=tk.X, pady=(0, 4))
+        tk.Button(str_top, text="清除", font=("Microsoft YaHei UI", 8), bg="#F0F0F0",
+                  relief=tk.RAISED, cursor="hand2",
+                  command=lambda: var_str_format.set("")
+                  ).pack(side=tk.RIGHT)
+
+        str_row = tk.Frame(str_lf, bg=bg)
+        str_row.pack(fill=tk.X, pady=(0, 4))
+        var_str_name = tk.StringVar(value="str1")
+        tk.Entry(str_row, textvariable=var_str_name, font=("Courier New", 9), width=6,
+                 state="readonly", readonlybackground="#F0F0F0"
+                 ).pack(side=tk.LEFT)
+        tk.Label(str_row, text=" = ", bg=bg, font=("Courier New", 9)).pack(side=tk.LEFT)
+        var_str_format = tk.StringVar()
+        entry_str_fmt = tk.Entry(str_row, textvariable=var_str_format,
+                                 font=("Courier New", 9), width=34)
+        entry_str_fmt.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        entry_str_fmt.bind("<FocusIn>", lambda e: last_focused.__setitem__(0, entry_str_fmt))
+
+        str_preview_var = tk.StringVar(value='str1 = ""')
+        tk.Label(str_lf, textvariable=str_preview_var, bg="#F8F8F8", fg="#333",
+                 font=("Courier New", 9), anchor="w", relief=tk.SUNKEN, padx=4
+                 ).pack(fill=tk.X, pady=(0, 4))
+
+        def _update_str_preview(*_):
+            f = var_str_format.get()
+            if f == _ph:
+                f = ""
+            str_preview_var.set(f'{var_str_name.get()} = f"{f}"')
+        var_str_format.trace_add("write", _update_str_preview)
+
+        last_added_str = [None]  # 记录最后一次添加的字符串变量名
+
+        def _add_str():
+            n = var_str_name.get()
+            f = entry_str_fmt.get()
+            # 生成合法 f-string
+            self._script_listbox.insert(tk.END, f'{n} = f"{f}"')
             self._sync_listbox_to_engine()
+            last_added_str[0] = n  # 记录刚添加的变量名
+            str_counter[0] += 1
+            var_str_name.set(f"str{str_counter[0]}")
+            entry_str_fmt.delete(0, tk.END)
+
+        tk.Button(str_lf, text="添加到脚本", font=("Microsoft YaHei UI", 8, "bold"),
+                  bg="#5B9BD5", fg="white", relief=tk.RAISED, cursor="hand2",
+                  command=_add_str).pack(anchor="e")
+
+        entry_str_fmt.bind("<FocusIn>", lambda e: last_focused.__setitem__(0, entry_str_fmt))
+
+        # ── 发送到端口 ──
+        send_lf = tk.LabelFrame(win, text="发送到端口", font=("Microsoft YaHei UI", 9),
+                                bg=bg, padx=10, pady=6)
+        send_lf.pack(fill=tk.X, padx=10, pady=(0, 6))
+
+        send_row = tk.Frame(send_lf, bg=bg)
+        send_row.pack(fill=tk.X)
+
+        running_ports = []
+        if self.tcp_service:
+            try:
+                running_ports = [str(p) for p in sorted(self.tcp_service._listeners.keys())
+                                 if self.tcp_service.is_running(p)]
+            except Exception:
+                pass
+
+        var_port = tk.StringVar()
+        combo_port = ttk.Combobox(send_row, textvariable=var_port, values=running_ports,
+                                  state="readonly", font=("Microsoft YaHei UI", 9), width=16)
+        combo_port.pack(side=tk.LEFT, padx=(0, 6))
+        if running_ports:
+            combo_port.current(0)
+        else:
+            combo_port.set("（无运行中端口）")
+
+        # 默认发送上面字符串变量
+        tk.Button(send_row, text="添加", font=("Microsoft YaHei UI", 8, "bold"),
+                  bg="#4CAF50", fg="white", relief=tk.RAISED, cursor="hand2",
+                  command=lambda: (
+                      self._script_listbox.insert(tk.END,
+                          f"tcp_send({var_port.get()}, {last_added_str[0] or var_str_name.get()})"),
+                      self._sync_listbox_to_engine()
+                  )).pack(side=tk.LEFT)
+
+        def _on_tree_dbl(event):
+            if not big_tree:
+                return
+            sel = big_tree.selection()
+            if not sel:
+                return
+            raw = big_tree.item(sel[0], "text").strip()
+            var_text = raw.lstrip("◆ 📁📡🟢⚫").split("(")[0].split("=")[0].strip()
+            skip = {"AppVar", "Global", "TCP 端口", "用户变量", "OCR", ""}
+            if var_text in skip:
+                return
+            entry = last_focused[0]
+            # 如果焦点在格式输入框，插入 {变量名} f-string 格式；否则插入纯变量名
+            if entry is entry_str_fmt:
+                entry.insert(tk.INSERT, "{" + var_text + "}")
+            else:
+                entry.insert(tk.INSERT, var_text)
+            win.lift()
+
+        if big_tree:
+            big_tree.bind("<Double-Button-1>", _on_tree_dbl)
+
+        def _on_close():
+            if big_tree:
+                big_tree.unbind("<Double-Button-1>")
             win.destroy()
 
-        btn_row = tk.Frame(win)
-        btn_row.pack(fill=tk.X, padx=8, pady=(0, 8))
-        tk.Button(btn_row, text="确定", bg="#4CAF50", fg="white",
-                  font=("Microsoft YaHei UI", 10), command=_apply).pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(btn_row, text="取消", font=("Microsoft YaHei UI", 10),
-                  command=win.destroy).pack(side=tk.LEFT)
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
+        # 底部按钮
+        btn_row = tk.Frame(win, bg=bg)
+        btn_row.pack(fill=tk.X, padx=10, pady=(4, 10))
+
+        def _insert():
+            line = preview_var.get().strip()
+            if not line:
+                return
+            self._script_listbox.insert(tk.END, line)
+            self._sync_listbox_to_engine()
+            var_cond.set("")
+            var_name.set("")
+            var_value.set("")
+
+        tk.Button(btn_row, text="关闭", font=("Microsoft YaHei UI", 9),
+                  bg="#F0F0F0", relief=tk.RAISED, padx=16, pady=4,
+                  cursor="hand2", command=_on_close).pack(side=tk.RIGHT)
 
     def _sync_listbox_to_engine(self):
         if not self.script_engine:
@@ -3109,13 +3337,17 @@ class InspectMainWindow:
             self.audit_log_panel.frame.pack_forget()
         self.template_canvas.pack_forget()
 
+        # template_frame 背景改为白色
+        self.template_frame.config(bg="white")
+
         # 2. 在 template_frame 中创建解决方案管理面板（覆盖显示）
         self.solution_panel = SolutionManagementPanel(
             parent=self.template_frame,
-            solutions_root=None,  # 使用默认路径
+            solutions_root=None,
             on_solution_selected=self._on_solution_panel_selected
         )
-        self.solution_panel.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        self.solution_panel.pack(fill=tk.BOTH, expand=True)
+        self.template_frame.update_idletasks()
         
         pass  # print removed
     def _hide_solution_panel(self):
@@ -3130,6 +3362,7 @@ class InspectMainWindow:
         
         # 2. 恢复日志面板（不恢复 template_canvas，日志面板占满此区域）
         if self.audit_log_panel is not None:
+            self.template_frame.config(bg="#808080")
             self.audit_log_panel.frame.pack(fill=tk.BOTH, expand=True)
         
         pass  # print removed
@@ -3934,6 +4167,9 @@ class InspectMainWindow:
         self._audit("inspection_control", "stop_inspection")
         # 清理运行界面
         if hasattr(self, 'run_interface') and self.run_interface:
+            # 返回前先保存统计数据到主窗口内存
+            if hasattr(self.run_interface, '_save_stats'):
+                self.run_interface._save_stats()
             # 停止检测（如果正在运行）
             if hasattr(self.run_interface, 'is_running') and self.run_interface.is_running:
                 self.run_interface.stop_inspection()
@@ -3975,10 +4211,9 @@ class InspectMainWindow:
             self.root.after_cancel(self.video_loop_id)
             self.video_loop_id = None
         pass  # print removed
-    def _create_img_btn(self, parent, text, image, command=None, side=tk.TOP):
+    def _create_img_btn(self, parent, text, image, command=None, side=tk.TOP, return_btn=False):
         """创建带图标的按钮"""
         frame = tk.Frame(parent, bg="white", pady=5)
-        frame.pack(side=side, fill=tk.X, padx=2)
         btn = tk.Button(
             frame, text=text, image=image, compound=tk.LEFT,
             bg="white", relief="raised", anchor="w",
@@ -3986,6 +4221,9 @@ class InspectMainWindow:
             command=command
         )
         btn.pack(fill=tk.X)
+        if return_btn:
+            return frame
+        frame.pack(side=side, fill=tk.X, padx=2)
         return btn
 
     def _start_video_loop(self):
