@@ -2797,10 +2797,14 @@ class SolutionMakerFrame(tk.Frame):
         def on_key_press(event):
             # 只允许输入一个字符
             current_text = entry.get()
-            if len(current_text) >= 1 and event.char.isalnum():
+            # 检查是否是删除键（Backspace 或 Delete）
+            if event.keysym in ('BackSpace', 'Delete'):
+                # 允许删除操作
+                return
+            if len(current_text) >= 1 and event.char:
                 # 输入了第二个字符，阻止输入
                 return "break"
-            elif len(current_text) == 0 and event.char.isalnum():
+            elif len(current_text) == 0 and event.char:
                 # 输入了第一个字符，延迟一小段时间后自动跳转
                 def auto_focus():
                     if len(entry.get()) == 1:
