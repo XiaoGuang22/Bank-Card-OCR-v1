@@ -1,0 +1,21 @@
+{
+    "fields": {
+        "CardNumber": [
+            351,
+            450,
+            1087,
+            147
+        ],
+        "Date": [
+            1007,
+            605,
+            232,
+            97
+        ]
+    },
+    "image_size": {
+        "width": 1600,
+        "height": 1200
+    },
+    "strategy": "absolute"
+}

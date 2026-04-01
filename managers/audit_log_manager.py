@@ -160,14 +160,14 @@ class AuditLogManager:
             conditions.append("user_name = ?")
             params.append(viewer_name)
 
-        # 关键字过滤
+        # 关键字过滤（支持用户名、角色名、操作类型、具体动作、目标对象）
         if keyword:
             conditions.append(
-                "(user_name LIKE ? OR operation_type LIKE ? OR "
+                "(user_name LIKE ? OR user_role LIKE ? OR operation_type LIKE ? OR "
                 "operation_action LIKE ? OR target_object LIKE ?)"
             )
             kw = f"%{keyword}%"
-            params.extend([kw, kw, kw, kw])
+            params.extend([kw, kw, kw, kw, kw])
 
         # 时间范围
         if start_ts:
