@@ -291,12 +291,14 @@ class TcpSettingsFrame(tk.Frame):
         self._ocr_field_nodes = {}
         for field in fields:
             field_node = t.insert(self._ocr_node, "end", text=f"◆ {field}", open=True)
-            self._ocr_field_nodes[field] = {"node": field_node, "result_node": None}
+            # 预先添加 Result 子节点，运行前显示 --
+            result_node = t.insert(field_node, "end", text=f"  ◆ Result = --")
+            self._ocr_field_nodes[field] = {"node": field_node, "result_node": result_node}
+            # 如果已有识别结果，更新显示
             if field in last_results:
                 res = last_results[field]
-                rn = t.insert(field_node, "end", text=f"  ◆ Result = {res.get('result', '--')}")
-                self._ocr_field_nodes[field]["result_node"] = rn
                 t.item(field_node, text=f"◆ {field}  =  {res.get('value', '--')}")
+                t.item(result_node, text=f"  ◆ Result = {res.get('result', '--')}")
 
     def update_ocr_result(self, field_name: str, value: str, result: str):
         """运行识别后更新 OCR 字段结果（由 RunInterface 调用）。"""
@@ -315,6 +317,12 @@ class TcpSettingsFrame(tk.Frame):
         if not hasattr(self, '_tcp_root_node'):
             return
         t = self._var_tree
+        try:
+            t.winfo_exists()
+        except Exception:
+            return
+        if not t.winfo_exists():
+            return
         for child in t.get_children(self._tcp_root_node):
             t.delete(child)
         all_clients = self._tcp_service.all_clients()

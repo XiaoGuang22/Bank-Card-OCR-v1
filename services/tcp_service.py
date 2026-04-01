@@ -83,7 +83,7 @@ class _PortListener:
         with self._lock:
             return [addr for _, addr in self._clients]
 
-    def broadcast(self, data: dict):
+    def broadcast(self, data):
         frame = TcpService._encode_frame(data)
         failed = []
         with self._lock:
@@ -284,7 +284,10 @@ class TcpService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _encode_frame(data: dict) -> bytes:
+    def _encode_frame(data) -> bytes:
+        """编码帧。data 为 dict 时用 JSON，为字符串时直接发送纯文本+换行。"""
+        if isinstance(data, str):
+            return data.encode('utf-8') + b'\n'
         payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
         return bytes([STX]) + payload + bytes([ETX]) + b'\n'
 

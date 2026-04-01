@@ -2207,12 +2207,12 @@ class InspectMainWindow:
     @ErrorHandler.handle_ui_error
     def clear_sidebar(self):
         """清空侧边栏"""
-        # 【关键修复】在清空侧边栏之前，先停止运行界面的视频循环
+        # 【关键修复】在清空侧边栏之前，只停止视频循环，不清空 run_interface 引用
+        # 这样从其他界面返回运行界面时，run_interface 实例和检测线程仍然存活
         if hasattr(self, 'run_interface') and self.run_interface is not None:
             if hasattr(self.run_interface, '_stop_video_loop'):
                 self.run_interface._stop_video_loop()
-            # 清空引用
-            self.run_interface = None
+            # 注意：不清空 run_interface = None，保留实例以便复用
 
         # 切换到子界面时隐藏日志面板
         if hasattr(self, 'audit_log_panel') and self.audit_log_panel is not None:
@@ -2889,8 +2889,6 @@ class InspectMainWindow:
 
         def _update_str_preview(*_):
             f = var_str_format.get()
-            if f == _ph:
-                f = ""
             str_preview_var.set(f'{var_str_name.get()} = f"{f}"')
         var_str_format.trace_add("write", _update_str_preview)
 
@@ -2947,16 +2945,28 @@ class InspectMainWindow:
                       self._sync_listbox_to_engine()
                   )).pack(side=tk.LEFT)
 
+        def _get_full_var_path(tree, item_id):
+            """从叶节点往上遍历，拼出完整变量路径，如 OCR.CardNumber.Result"""
+            skip_roots = {"AppVar", "Global", "TCP 端口", "用户变量", "OCR", "系统变量", ""}
+            parts = []
+            cur = item_id
+            while cur:
+                raw = tree.item(cur, "text").strip()
+                # 去掉装饰符号，取等号左边部分
+                clean = raw.lstrip("◆ 📁📡🟢⚫").split("(")[0].split("=")[0].strip()
+                if clean and clean not in skip_roots:
+                    parts.insert(0, clean)
+                cur = tree.parent(cur)
+            return ".".join(parts)
+
         def _on_tree_dbl(event):
             if not big_tree:
                 return
             sel = big_tree.selection()
             if not sel:
                 return
-            raw = big_tree.item(sel[0], "text").strip()
-            var_text = raw.lstrip("◆ 📁📡🟢⚫").split("(")[0].split("=")[0].strip()
-            skip = {"AppVar", "Global", "TCP 端口", "用户变量", "OCR", ""}
-            if var_text in skip:
+            var_text = _get_full_var_path(big_tree, sel[0])
+            if not var_text:
                 return
             entry = last_focused[0]
             # 如果焦点在格式输入框，插入 {变量名} f-string 格式；否则插入纯变量名
@@ -4105,32 +4115,15 @@ class InspectMainWindow:
     @ErrorHandler.handle_ui_error
     def show_run_interface(self):
         """显示运行界面"""
-        pass  # print removed
         # 0. 先清除解决方案管理面板（如果存在）
         if self.solution_panel is not None:
-            pass  # print removed
             self._hide_solution_panel()
         
-        # 获取当前触发模式
-        trigger_mode = self.cam.get_trigger_mode() if self.cam else "internal"
-        
-        # 根据触发模式决定画布显示
-        if trigger_mode == "internal":
-            # 内部时钟模式：停止视频循环（运行界面会自己启动）
-            self._stop_video_loop()
-        else:
-            # 硬件/软件触发模式：停止视频循环，显示当前静止帧
-            self._stop_video_loop()
-            # 显示当前帧
-            if self.cam:
-                raw_img = self.cam.get_image()
-                if raw_img is not None:
-                    self._display_static_frame(raw_img)
-        
+        # 停止主窗口视频循环（运行界面会自己管理画布）
+        self._stop_video_loop()
+
         # 清空侧边栏
         self.clear_sidebar()
-
-        # 运行界面：template_frame 显示白色背景
         self.template_frame.config(bg="white")
 
         # 导入RunInterface类
@@ -4138,72 +4131,66 @@ class InspectMainWindow:
             from ui.RunInterface import RunInterface
         except ImportError:
             from RunInterface import RunInterface
-        
-        # ★★★ 重要：重新启用全局视频标志 ★★★
+
         RunInterface._global_video_enabled = True
-        print(f"✅ [InspectMainWindow] 已重新启用全局视频标志")
-        
-        # 创建RunInterface实例
-        try:
-            self.run_interface = RunInterface(
-                parent=self.sidebar_frame,
-                camera_controller=self.cam,
-                on_back_callback=self.on_run_interface_back,
-                main_window=self,  # 传递主窗口引用
-                script_engine=self.script_engine if hasattr(self, 'script_engine') else None
-            )
-            self._audit("inspection_control", "start_inspection")
-            pass  # print removed
-            pass
-        except Exception as e:
-            pass
-            self._audit("inspection_control", "start_inspection", operation_result="失败")
-            # 返回主菜单
-            self.show_main_menu()
+
+        # ★ 单例：只在第一次创建，之后复用
+        if not hasattr(self, 'run_interface') or self.run_interface is None:
+            try:
+                self.run_interface = RunInterface(
+                    parent=self.sidebar_frame,
+                    camera_controller=self.cam,
+                    on_back_callback=self.on_run_interface_back,
+                    main_window=self,
+                    script_engine=self.script_engine if hasattr(self, 'script_engine') else None
+                )
+                self._audit("inspection_control", "enter_run_interface")
+            except Exception as e:
+                print(f"RunInterface 创建失败: {e}")
+                self._audit("inspection_control", "enter_run_interface", operation_result="失败")
+                self.show_main_menu()
+                return
+        else:
+            # 已有实例：重建侧边栏 UI（父容器已被 clear_sidebar 清空）
+            self.run_interface.parent = self.sidebar_frame
+            self.run_interface._create_sidebar_ui()
+            # _create_sidebar_ui 末尾已调用 _init_display_on_enter，无需重复调用
+
+            # ★ 关键：如果检测还在后台运行，立即恢复视频循环和数据刷新
+            if self.run_interface.is_running:
+                trigger_mode = self.cam.get_trigger_mode()
+                if trigger_mode == "internal":
+                    if not self.run_interface.video_loop_running:
+                        self.run_interface._start_video_loop()
+                print("✅ 重新进入运行界面，检测仍在运行，视频循环已恢复")
 
     def on_run_interface_back(self):
-        """从运行界面返回主菜单"""
-        pass  # print removed
-        self._audit("inspection_control", "stop_inspection")
-        # 清理运行界面
+        """从运行界面返回主菜单（检测继续在后台运行）"""
+        self._audit("inspection_control", "leave_run_interface")
+
         if hasattr(self, 'run_interface') and self.run_interface:
-            # 返回前先保存统计数据到主窗口内存
+            # 只保存统计数据，不停止检测
             if hasattr(self.run_interface, '_save_stats'):
                 self.run_interface._save_stats()
-            # 停止检测（如果正在运行）
-            if hasattr(self.run_interface, 'is_running') and self.run_interface.is_running:
-                self.run_interface.stop_inspection()
-            
-            # ★★★ 重要：停止 RunInterface 的视频循环 ★★★
+            # 停止视频循环（画布刷新），检测线程继续跑
             if hasattr(self.run_interface, '_stop_video_loop'):
                 self.run_interface._stop_video_loop()
-            
-            # ★★★ 重要：禁用 RunInterface 的全局视频标志 ★★★
             from ui.RunInterface import RunInterface
             RunInterface._global_video_enabled = False
-            print(f"✅ [InspectMainWindow] 已禁用 RunInterface 全局视频标志")
-            
-            # ★★★ 注意：不要清除 saved_ocr_state，保持 ROI 状态 ★★★
-            # 这样下次进入运行界面时仍能显示 ROI 框
-            
-            # 销毁界面
-            try:
-                # 清空父窗口
-                for widget in self.sidebar_frame.winfo_children():
-                    widget.destroy()
-            except:
-                pass
-            
-            self.run_interface = None
-        
-        # 重新启动视频循环
+
+        # 清空侧边栏 UI（不销毁 run_interface 实例）
+        try:
+            for widget in self.sidebar_frame.winfo_children():
+                widget.destroy()
+        except Exception:
+            pass
+
+        # 恢复主窗口视频循环
         if not self.video_loop_running:
             self._start_video_loop()
-        
-        # 恢复主菜单
+
         self.show_main_menu()
-        
-        pass  # print removed
+
     def _stop_video_loop(self):
         """停止视频循环"""
         self.video_loop_running = False

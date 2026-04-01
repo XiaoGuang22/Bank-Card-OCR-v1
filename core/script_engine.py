@@ -74,6 +74,100 @@ class ProgNamespace:
         prog_vars[name] = value
 
 
+class DotNamespace:
+    """
+    点号命名空间：将扁平的 'A.B.C' 键映射为可用 obj.B.C 访问的嵌套对象。
+    用于在脚本中支持 OCR.CardNumber.Result 这样的访问方式。
+    当直接用于字符串格式化时（如 f"{CardNumber}"），返回 _value 字段值。
+    """
+
+    def __init__(self, data: dict):
+        object.__setattr__(self, '_data', data)
+
+    def __getattr__(self, name: str):
+        data = object.__getattribute__(self, '_data')
+        if name in data:
+            val = data[name]
+            if isinstance(val, dict):
+                return DotNamespace(val)
+            return val
+        raise AttributeError(f"没有属性 '{name}'")
+
+    def __str__(self):
+        # f"{CardNumber}" 时返回字段值，而不是对象 repr
+        data = object.__getattribute__(self, '_data')
+        return str(data.get('_value', ''))
+
+    def __format__(self, format_spec):
+        return format(str(self), format_spec)
+
+    def __repr__(self):
+        data = object.__getattribute__(self, '_data')
+        return str(data.get('_value', repr(data)))
+
+
+def _build_dot_namespaces(user_vars: dict) -> dict:
+    """
+    把 user_vars 中形如 'CardNumber.Result' 或 'OCR.CardNumber.Result' 的扁平键
+    重建为嵌套 DotNamespace 对象，注入到脚本命名空间。
+
+    支持两种访问方式：
+      CardNumber.Result  → CardNumber 是 DotNamespace，str(CardNumber) 返回字段值
+      OCR.CardNumber.Result → OCR.CardNumber.Result
+    """
+    # 第一步：收集所有含点号的顶层命名空间
+    ns_data: dict[str, dict] = {}
+    for key, value in user_vars.items():
+        parts = key.split(".", 1)
+        if len(parts) == 2:
+            top, rest = parts
+            if top not in ns_data:
+                ns_data[top] = {}
+            ns_data[top][rest] = value
+
+    # 第二步：对有子键的顶层名称，把同名的叶值作为 _value 注入
+    for top in list(ns_data.keys()):
+        if top in user_vars:
+            ns_data[top]['_value'] = user_vars[top]
+
+    # 第三步：对每个顶层命名空间，递归构建嵌套结构
+    result = {}
+    for top, flat in ns_data.items():
+        result[top] = DotNamespace(_build_nested(flat))
+    return result
+
+
+def _build_nested(flat: dict) -> dict:
+    """把 {'A.B': v1, 'A': v2, 'C': v3} 构建为嵌套 dict，支持多层点号。"""
+    nested: dict = {}
+    for key, value in flat.items():
+        parts = key.split(".", 1)
+        if len(parts) == 1:
+            # 叶节点
+            if key not in nested:
+                nested[key] = value
+            elif isinstance(nested[key], dict):
+                # 已作为父节点存在，把叶值存为 _value
+                nested[key]['_value'] = value
+            # 如果已是叶值，保持不变（先到先得）
+        else:
+            parent, rest = parts
+            if parent not in nested:
+                nested[parent] = {}
+            elif not isinstance(nested[parent], dict):
+                # 已有叶值，转为 dict 保留原值
+                nested[parent] = {'_value': nested[parent]}
+            sub = _build_nested({rest: value})
+            # 合并 sub 到 nested[parent]，sub 里的值可能已是 DotNamespace
+            for sk, sv in sub.items():
+                nested[parent][sk] = sv
+    # 把所有 dict 值包装为 DotNamespace（用 list 避免迭代时修改）
+    for k, v in list(nested.items()):
+        if isinstance(v, dict):
+            nested[k] = DotNamespace(v)
+    return nested
+
+
 class ScriptEngine:
     """脚本引擎核心类，管理脚本存储、变量系统和触发点执行。"""
 
@@ -233,8 +327,14 @@ class ScriptEngine:
         # 注入系统变量（只读，ProtectedNamespace 会拦截对这些键的写操作）
         for k, v in self._sys_vars.items():
             dict.__setitem__(namespace, k, v)
-        # 注入用户变量
+        # 注入用户变量（扁平键，如 CardNumber_Result）
         for k, v in self._user_vars.items():
+            # 含点号的键不能直接作为 Python 变量名，跳过（由下面的命名空间对象处理）
+            if '.' not in k:
+                dict.__setitem__(namespace, k, v)
+        # 注入点号命名空间对象（如 OCR.CardNumber.Result → OCR.CardNumber.Result）
+        dot_ns = _build_dot_namespaces(self._user_vars)
+        for k, v in dot_ns.items():
             dict.__setitem__(namespace, k, v)
         # 注入内置函数（需求 8.1~8.5）：tcp_send、tcp_recv、trigger_capture、reset_stats、log
         for k, v in self._builtins_env.items():
@@ -273,6 +373,12 @@ class ScriptEngine:
             logger.error(
                 f"[ScriptEngine] 触发点 '{trigger}' 执行异常：{result_holder['error']}"
             )
+            logger.error(
+                f"[ScriptEngine] 执行的脚本内容：\n{code}"
+            )
+            logger.error(
+                f"[ScriptEngine] _user_vars keys: {list(self._user_vars.keys())}"
+            )
             return
 
         # 将脚本中新增/修改的非系统变量回写到 _user_vars
@@ -280,6 +386,12 @@ class ScriptEngine:
         if final_ns is not None:
             for key, value in final_ns.items():
                 if key.startswith("__") or key in sys_var_names or key == 'Prog':
+                    continue
+                # 跳过点号命名空间对象（DotNamespace），避免污染 _user_vars
+                if isinstance(value, DotNamespace):
+                    continue
+                # 跳过内置函数
+                if callable(value) and key in self._builtins_env:
                     continue
                 self._user_vars[key] = value
 
@@ -321,8 +433,21 @@ class ScriptEngine:
             if self._reset_stats_cb is not None:
                 self._reset_stats_cb()
 
+        def _tcp_send(port_or_data, data_or_none=None):
+            """
+            支持两种调用方式：
+              tcp_send(data)         → 广播到所有端口
+              tcp_send(port, data)   → 广播到指定端口
+            data 可以是字符串或 dict
+            """
+            if data_or_none is None:
+                port, data = None, port_or_data
+            else:
+                port, data = port_or_data, data_or_none
+            self._tcp_service.broadcast(data, port)
+
         return {
-            'tcp_send':        lambda data, port=None: self._tcp_service.broadcast(data, port),
+            'tcp_send':        _tcp_send,
             'tcp_recv':        self._tcp_recv_str,
             'trigger_capture': _trigger_capture,
             'reset_stats':     _reset_stats,
@@ -459,6 +584,14 @@ class ScriptEngine:
 
         # 注入 Prog 持久变量对象
         dict.__setitem__(namespace, 'Prog', ProgNamespace(self._prog_vars))
+
+        # 注入用户变量和点号命名空间（test_execute 中注入当前 _user_vars）
+        for k, v in self._user_vars.items():
+            if '.' not in k:
+                dict.__setitem__(namespace, k, v)
+        dot_ns = _build_dot_namespaces(self._user_vars)
+        for k, v in dot_ns.items():
+            dict.__setitem__(namespace, k, v)
 
         # 注入内置函数（tcp_send/tcp_recv 替换为 no-op，log 替换为捕获版本）
         mock_env = {

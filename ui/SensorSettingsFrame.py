@@ -118,18 +118,6 @@ class SensorSettingsFrame(tk.Frame):
         # 最大间隔 = 1000 / 0.2 = 5000 ms
         self.slider_interval = self._create_slider(lf_trig, 66, 5000, unit="毫秒", precision=0, resolution=1)
         
-        # 软件触发测试按钮
-        self.btn_software_trigger = tk.Button(
-            lf_trig,
-            text="执行软件触发（测试）",
-            bg="#4CAF50",
-            fg="white",
-            font=("Microsoft YaHei UI", 9, "bold"),
-            relief="raised",
-            command=self._test_software_trigger,
-            cursor="hand2"
-        )
-        self.btn_software_trigger.pack(fill=tk.X, pady=(10, 5), padx=5)
 
         # === 3. 检测触发延时（已移除）===
         # lf_delay = ttk.LabelFrame(self, text="检测触发延时", style="White.TLabelframe")
@@ -331,10 +319,6 @@ class SensorSettingsFrame(tk.Frame):
     
     def _provide_trigger_feedback(self):
         """提供触发反馈"""
-        # 短暂改变按钮颜色提供视觉反馈
-        original_bg = safe_call(self.btn_software_trigger.cget, "bg", default="#4CAF50")
-        safe_call(self.btn_software_trigger.config, bg="#2E7D32")
-        safe_call(self.after, 200, lambda: safe_call(self.btn_software_trigger.config, bg=original_bg))
     
     @ErrorHandler.handle_ui_error
     def apply_settings(self):
@@ -424,19 +408,6 @@ class SensorSettingsFrame(tk.Frame):
         print("="*60)
         print("✅ 设置应用完成")
         print("="*60 + "\n")
-        
-        # 显示成功提示
-        import tkinter.messagebox as messagebox
-        if trigger_mode == "software":
-            messagebox.showinfo(
-                "设置已应用",
-                "传感器设置已成功应用！\n\n软件触发模式已启用。\n您可以使用\"执行软件触发\"按钮测试触发功能。"
-            )
-        else:
-            messagebox.showinfo(
-                "设置已应用",
-                "传感器设置已成功应用！"
-            )
 
     def _refresh_states(self):
         """刷新所有滑块的状态"""
@@ -444,10 +415,8 @@ class SensorSettingsFrame(tk.Frame):
 
         if mode == "internal":
             self._enable_slider(self.slider_interval)
-            self.btn_software_trigger.pack_forget()
         else:  # software
             self._disable_slider(self.slider_interval)
-            self.btn_software_trigger.pack(fill=tk.X, pady=(10, 5), padx=5)
 
         # 始终启用的滑块
         always_active = [

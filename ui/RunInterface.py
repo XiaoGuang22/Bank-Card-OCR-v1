@@ -169,8 +169,8 @@ class RunInterface:
         # 从主窗口恢复上次统计数据
         self._load_stats()
         
-        # 初始化OCR引擎（使用默认模板目录）
-        template_dir = "solutions/测试方案"  # 默认模板目录
+        # 初始化OCR引擎（模板在识别时按需加载）
+        template_dir = ""
         self.ocr_engine = OCREngine(template_dir)
         
         # 初始化识别器（用于字符识别）
@@ -182,6 +182,8 @@ class RunInterface:
         self.inspection_thread = None
         self.stop_event = threading.Event()
         self.status_label = None  # 状态栏已移除，保留引用避免报错
+        # 软件/手动触发事件
+        self.trigger_event = threading.Event()
         
         # 性能统计
         self.last_trigger_time = None
@@ -403,7 +405,10 @@ class RunInterface:
             callbacks
         )
         self.control_buttons_panel.pack(fill=tk.X, padx=5, pady=5)
-        
+
+        # 立即同步按钮状态
+        self.control_buttons_panel.toggle_start_button(self.is_running)
+
         # 5. 进入运行界面时，如果是内部时钟模式，自动显示视频流（不启动检测）
         self._init_display_on_enter()
     
@@ -654,17 +659,30 @@ class RunInterface:
         if self.is_running:
             print("⚠️ 检测已在运行中")
             return
-        
+
+        # 前置检查：必须先选择解决方案
+        solution_name = None
+        if self.main_window and hasattr(self.main_window, 'saved_ocr_state'):
+            solution_name = self.main_window.saved_ocr_state.get('solution_name')
+
+        if not solution_name:
+            messagebox.showwarning("未选择方案", "请先在 OCR 工具中选择一个字体库方案，再启动运行。")
+            return
+
+        # 前置检查：方案路径必须存在
+        solutions_root = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "solutions")
+        solution_path = os.path.join(solutions_root, solution_name)
+        if not os.path.exists(solution_path):
+            messagebox.showerror("方案不存在", f"方案路径不存在：\n{solution_path}\n\n请重新在 OCR 工具中选择方案。")
+            return
+
         print("🚀 启动检测流程...")
-        
-        # 加载OCR模板
+
+        self.ocr_engine.template_dir = solution_path
         if not self.ocr_engine.template_loaded:
-            print("📦 加载OCR模板...")
             if not self.ocr_engine.load_templates():
-                messagebox.showerror(
-                    "错误",
-                    "无法加载OCR模板，请检查模板目录"
-                )
+                messagebox.showerror("错误", "无法加载OCR模板，请检查解决方案配置")
                 return
         
         # 设置运行状态（必须在启动视频循环之前）
@@ -683,8 +701,8 @@ class RunInterface:
             # 不清空画布，让用户看到上次触发的帧
             pass
         
-        # 更新按钮状态
-        self.control_buttons_panel.enable_start_button(False)
+        # 更新按钮状态为红色"停止"
+        self.control_buttons_panel.toggle_start_button(True)
         
         # 更新状态栏
         self.status_label and self.status_label.config(text="运行中...")
@@ -704,8 +722,10 @@ class RunInterface:
         if not self.is_running:
             print("⚠️ 检测未在运行")
             return
-        
-        print("🛑 停止检测流程...")
+
+        import traceback
+        print("🛑 stop_inspection 被调用，调用栈:")
+        traceback.print_stack(limit=6)
         
         # 停止视频循环（如果正在运行）
         self._stop_video_loop()
@@ -713,13 +733,13 @@ class RunInterface:
         # 设置停止标志
         self.is_running = False
         self.stop_event.set()
-        
-        # 等待线程结束
+
+        # 非阻塞等待线程结束（避免卡住 UI 线程）
         if self.inspection_thread and self.inspection_thread.is_alive():
-            self.inspection_thread.join(timeout=2.0)
+            threading.Thread(target=self.inspection_thread.join, kwargs={"timeout": 2.0}, daemon=True).start()
         
-        # 更新按钮状态
-        self.control_buttons_panel.enable_start_button(True)
+        # 更新按钮状态为绿色"开始"
+        self.control_buttons_panel.toggle_start_button(False)
         
         # 更新状态栏
         self.status_label and self.status_label.config(text="已停止")
@@ -729,56 +749,100 @@ class RunInterface:
     @safe_execute(default_return=None, error_message="检测主循环异常")
     def _inspection_loop(self):
         """检测主循环（在独立线程中运行）"""
-        print("🔄 进入检测主循环...")
-        
-        # 获取触发模式
+        # 获取触发模式和间隔时间
         trigger_mode = self.camera_controller.get_trigger_mode()
-        
+
+        # 获取内部时钟间隔（毫秒）
+        interval_ms = 1000  # 默认1秒
+        if self.main_window and hasattr(self.main_window, 'cam'):
+            try:
+                from config import get_user_sensor_settings
+                settings = get_user_sensor_settings()
+                interval_ms = settings.get('interval_ms', 1000)
+            except Exception:
+                pass
+        interval_sec = max(interval_ms / 1000.0, 0.05)
+
         while self.is_running and not self.stop_event.is_set():
             try:
+                if trigger_mode == "internal":
+                    # 内部时钟模式：按间隔时间自动识别
+                    pass  # 直接往下执行识别
+                else:
+                    # 软件触发 / 手动触发模式：等待触发事件
+                    triggered = self.trigger_event.wait(timeout=0.2)
+                    if not triggered:
+                        continue  # 超时，继续等待
+                    self.trigger_event.clear()
+                    if not self.is_running:
+                        break
+
                 # 1. 采图前执行脚本
                 if self.script_engine:
                     self.script_engine.execute("pre_image_process")
-                
-                # 2. 图像采集
+
+                # 2. 图像采集：软件触发模式先发指令让相机曝光新帧
+                if trigger_mode == "software":
+                    self.camera_controller.execute_software_trigger()
+                    # 等待新帧到来（最多500ms）
+                    if hasattr(self.camera_controller, 'frame_updated_event'):
+                        self.camera_controller.frame_updated_event.clear()
+                        self.camera_controller.waiting_for_trigger = True
+                        self.camera_controller.frame_updated_event.wait(timeout=0.5)
+                        self.camera_controller.waiting_for_trigger = False
                 image = self.camera_controller.get_image()
-                
                 if image is None:
-                    time.sleep(0.1)
+                    if trigger_mode == "internal":
+                        time.sleep(interval_sec)
                     continue
-                
-                # 3. 如果是硬件/软件触发模式，显示单帧图像到画布
-                if trigger_mode in ["hardware", "software"] and self.main_window:
-                    self.parent.after(0, self._display_image_on_canvas, image)
-                
-                # 4. OCR识别
-                result = self.ocr_engine.recognize(image)
-                
-                # 5. 更新脚本引擎系统变量并执行 post_image_process
+
+                # 3. 图像采集后先显示（所有触发模式）
+                if self.main_window:
+                    try:
+                        self.main_window.root.after(0, self._display_image_on_canvas, image)
+                    except Exception:
+                        pass
+
+                # 4. 真实字符识别
+                recognition_results = self._run_recognition_on_image(image)
+
+                # 5. 把 OCR 字段结果注入脚本引擎用户变量，再执行 post_image_process
                 if self.script_engine:
-                    # 将 status 映射为数字：1=Pass / 2=Recycle / 3=Reject
-                    status_map = {"PASS": 1, "RECYCLE": 2, "FAIL": 3}
-                    result_code = status_map.get(result.status, 3)
-                    card_number = result.fields.get("card_number", "") if result.fields else ""
-                    confidence = result.average_confidence
-                    timestamp = result.timestamp.strftime("%Y-%m-%d %H:%M:%S") if result.timestamp else ""
+                    overall_pass = bool(recognition_results) and all(not r['is_abnormal'] for r in recognition_results)
+                    result_code = 1 if overall_pass else 3
+                    avg_conf = (sum(r['confidence'] for r in recognition_results) / len(recognition_results)) if recognition_results else 0.0
+                    card_number = next((r['result'] for r in (recognition_results or []) if r['field_name'] == 'CardNumber'), "")
+                    timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S")
                     self.script_engine.update_system_vars(
                         Result=result_code,
                         CardNumber=card_number,
-                        Confidence=confidence,
-                        Timestamp=timestamp,
+                        Confidence=avg_conf,
+                        Timestamp=timestamp_str,
                     )
+                    # 把每个 OCR 字段的识别值和结果注入为用户变量（供脚本直接使用）
+                    # 扁平键：CardNumber / Name / Date（向后兼容）
+                    # 点号键：CardNumber.Result / OCR.CardNumber / OCR.CardNumber.Result
+                    for r in (recognition_results or []):
+                        field = r['field_name']
+                        val = r['result']
+                        res = "FAIL" if r['is_abnormal'] else "PASS"
+                        # 扁平键（向后兼容）
+                        self.script_engine._user_vars[field] = val
+                        self.script_engine._user_vars[f"{field}_Result"] = res
+                        # 点号键：CardNumber.Result（控制界面双击插入的格式）
+                        self.script_engine._user_vars[f"{field}.Result"] = res
+                        # OCR 前缀点号键
+                        self.script_engine._user_vars[f"OCR.{field}"] = val
+                        self.script_engine._user_vars[f"OCR.{field}.Result"] = res
                     self.script_engine.execute("post_image_process")
-                
-                # 6. 更新统计数据
-                if result.status == "PASS":
-                    self.stats_manager.increment_pass()
-                elif result.status == "FAIL":
-                    self.stats_manager.increment_reject()
-                
-                # 7. 更新显示（在主线程中执行）
-                self.parent.after(0, self.update_display, image, result)
-                
+
+                # 6. 更新统计数据和显示
+                try:
+                    print(f"[检测线程] 准备调度UI更新, count将变为{self.image_detection_count+1}")
+                    self.main_window.root.after(0, self._update_recognition_results, recognition_results or [])
+                except Exception as e:
+                    print(f"[检测线程] after调度失败: {e}")
+
                 # 8. 计算触发频率
                 current_time = time.time()
                 if self.last_trigger_time is not None:
@@ -786,20 +850,16 @@ class RunInterface:
                     if time_diff > 0:
                         self.trigger_frequency = 1.0 / time_diff
                 self.last_trigger_time = current_time
-                
-                # 9. 控制帧率（根据触发模式）
+
+                # 9. 内部模式按间隔等待
                 if trigger_mode == "internal":
-                    # 内部时钟模式：视频循环已经在显示，这里只做OCR识别
-                    time.sleep(0.05)  # 约20 FPS
-                else:
-                    # 硬件/软件触发模式：等待下一次触发
-                    time.sleep(0.1)
-            
+                    time.sleep(interval_sec)
+
             except Exception as e:
-                # 静默处理异常，避免干扰用户
+                print(f"[inspection_loop] 异常: {e}")
                 time.sleep(0.1)
-        
-        print("✅ 退出检测主循环")
+
+        print(f"[inspection_loop] 循环退出 — is_running={self.is_running}, stop_event={self.stop_event.is_set()}")
     
     @safe_execute(default_return=None, error_message="更新显示失败")
     def update_display(self, image, result):
@@ -832,41 +892,8 @@ class RunInterface:
         # 持久化保存统计数据
         self._save_stats()
 
-        # 把识别结果写回主窗口，供控制界面 AppVar 树显示
-        if self.main_window and hasattr(self.main_window, 'ocr_last_results'):
-            for r in results:
-                self.main_window.ocr_last_results[r['field_name']] = {
-                    "value": r['result'],
-                    "result": "FAIL" if r['is_abnormal'] else "PASS"
-                }
-
-        # 同步识别结果到主窗口
-        if self.main_window and hasattr(self.main_window, 'ocr_last_results'):
-            self.main_window.ocr_last_results = {
-                r['field_name']: {
-                    "value": r['result'],
-                    "result": "FAIL" if r['is_abnormal'] else "PASS",
-                    "confidence": f"{r['confidence']:.2%}"
-                } for r in results
-            }
-        
-        # 更新时间信息
-        # 时间戳（格式：M/D/YYYY\nHH:MM:SS.mm）
-        timestamp_str = result.timestamp.strftime("%m/%d/%Y\n%H:%M:%S.%f")[:-4]
-        self.timestamp_label.config(text=timestamp_str)
-        
-        # 检测时间
-        self.detection_time_label.config(text=f"{result.detection_time_ms:.3f} ms")
-        
         # 触发频率
         self.trigger_freq_label.config(text=f"{self.trigger_frequency:.3f} Hz")
-        
-        # 更新树形结构
-        self.tree_view_panel.update_variable("AppVar.Result", result.status)
-        self.tree_view_panel.update_variable(
-            "AppVar.Confidence",
-            f"{result.average_confidence:.2%}"
-        )
     
     @safe_execute(default_return=None, error_message="重置统计数据失败")
     def _save_stats(self):
@@ -874,14 +901,24 @@ class RunInterface:
         if not self.main_window or not hasattr(self.main_window, 'persistent_stats'):
             return
         stats = self.stats_manager.get_statistics()
+
+        # 安全读取 UI 控件文本（控件销毁后用缓存值）
+        def _safe_cget(widget, attr, default):
+            try:
+                if widget and widget.winfo_exists():
+                    return widget.cget(attr)
+            except Exception:
+                pass
+            return default
+
         self.main_window.persistent_stats = {
             "pass": stats["pass"],
             "reject": stats["reject"],
             "recycle": stats["recycle"],
             "image_detection_count": self.image_detection_count,
-            "timestamp": self.timestamp_label.cget("text") if self.timestamp_label else "--",
-            "detection_time": self.detection_time_label.cget("text") if self.detection_time_label else "-- ms",
-            "trigger_freq": self.trigger_freq_label.cget("text") if self.trigger_freq_label else "-- Hz",
+            "timestamp": _safe_cget(self.timestamp_label, "text", "--"),
+            "detection_time": _safe_cget(self.detection_time_label, "text", "-- ms"),
+            "trigger_freq": _safe_cget(self.trigger_freq_label, "text", "-- Hz"),
             "tree_vars": self._get_tree_vars()
         }
 
@@ -942,12 +979,7 @@ class RunInterface:
     
     @safe_execute(default_return=None, error_message="返回按钮处理失败")
     def _on_back_button_click(self):
-        """返回按钮点击事件"""
-        # 停止检测
-        if self.is_running:
-            self.stop_inspection()
-        
-        # 调用返回回调
+        """返回按钮点击事件（检测继续在后台运行）"""
         if self.on_back_callback:
             self.on_back_callback()
     
@@ -955,21 +987,12 @@ class RunInterface:
     def _on_start_button_click(self):
         """开始按钮点击事件"""
         if self.is_running:
+            # 已在运行：点击变为停止
             self.stop_inspection()
+            self.control_buttons_panel.toggle_start_button(False)
         else:
-            # 如果有静态图片或当前图像，执行字符识别
-            if self.static_image_mode and self.static_image is not None:
-                self._perform_character_recognition(self.static_image)
-            else:
-                # 尝试从相机获取当前图像进行识别
-                try:
-                    current_image = self.camera_controller.get_image()
-                    if current_image is not None:
-                        self._perform_character_recognition(current_image)
-                    else:
-                        messagebox.showwarning("提示", "无法获取图像，请先打开图片或确保相机连接正常")
-                except Exception as e:
-                    messagebox.showerror("错误", f"获取图像失败：{str(e)}")
+            self.start_inspection()
+            self.control_buttons_panel.toggle_start_button(True)
     
     @safe_execute(default_return=None, error_message="字符识别失败")
     def _perform_character_recognition(self, image):
@@ -1015,38 +1038,34 @@ class RunInterface:
     
     @safe_execute(default_return=None, error_message="识别器初始化失败")
     def _initialize_recognizer(self):
-        """初始化识别器"""
-        # 检查是否有保存的解决方案配置
+        """初始化识别器（可从后台线程调用，不弹 messagebox）"""
         if not self.main_window or not hasattr(self.main_window, 'saved_ocr_state'):
-            messagebox.showwarning("提示", "请先在OCR工具中选择解决方案")
+            print("⚠️ 识别器初始化失败：请先在OCR工具中选择解决方案")
             return
-        
+
         saved_state = self.main_window.saved_ocr_state
         if not saved_state.get('has_state', False):
-            messagebox.showwarning("提示", "请先在OCR工具中选择解决方案")
+            print("⚠️ 识别器初始化失败：请先在OCR工具中选择解决方案")
             return
-        
-        # 获取OCR工具中选择的解决方案名称
+
         solution_name = saved_state.get('solution_name')
         if not solution_name:
-            messagebox.showwarning("提示", "OCR工具中没有选择解决方案，请先在OCR工具中选择方案")
+            print("⚠️ 识别器初始化失败：OCR工具中没有选择解决方案")
             return
-        
-        # 使用相对路径（项目根目录下的 solutions 文件夹）
+
         solutions_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "solutions")
         solution_path = os.path.join(solutions_root, solution_name)
-        
+
         if not os.path.exists(solution_path):
-            messagebox.showerror("错误", f"OCR工具选择的解决方案路径不存在：{solution_path}\n请检查解决方案是否存在")
+            print(f"⚠️ 识别器初始化失败：解决方案路径不存在 {solution_path}")
             return
-        
-        # 初始化识别器
+
         self.recognizer = BankCardRecognizer()
         template_count = self.recognizer.load_templates(solution_path)
         self.current_solution_path = solution_path
-        
+
         if template_count == 0:
-            messagebox.showwarning("警告", f"解决方案 '{solution_name}' 中没有找到模板文件\n请检查解决方案配置")
+            print(f"⚠️ 解决方案 '{solution_name}' 中没有找到模板文件")
         else:
             print(f"✅ 识别器初始化成功，使用OCR工具选择的解决方案: {solution_name}，加载了 {template_count} 个模板")
     
@@ -1060,6 +1079,12 @@ class RunInterface:
         roi_layout = saved_state.get('roi_layout', {})
         
         if not roi_layout:
+            return []
+
+        # 识别器懒初始化
+        if self.recognizer is None:
+            self._initialize_recognizer()
+        if self.recognizer is None:
             return []
         
         results = []
@@ -1294,52 +1319,54 @@ class RunInterface:
     @safe_execute(default_return=None, error_message="更新识别结果失败")
     def _update_recognition_results(self, results):
         """更新识别结果显示"""
-        if not results:
-            messagebox.showinfo("提示", "没有识别到任何字符")
-            return
-        
-        # 每次识别一张图片，检测部件数量加1
+        print(f"[UI更新] _update_recognition_results 被调用, count={self.image_detection_count+1}")
+        # 先做统计数据更新（无论 UI 是否存活）
         self.image_detection_count += 1
-        
-        # 统计结果
-        total_fields = len(results)
-        pass_count = sum(1 for r in results if not r['is_abnormal'])
-        reject_count = total_fields - pass_count
-        
-        # 更新统计显示 - 检测的部件显示图片数量
-        self.detected_parts_label.config(text=f"  {self.image_detection_count}")
-        
-        # Pass/Reject 按图片整体结果计算
-        if reject_count == 0:
-            # 所有字段都通过，这张图片算Pass
-            self.stats_manager.increment_pass()
-        else:
-            # 有字段失败，这张图片算Reject
+        if not results:
             self.stats_manager.increment_reject()
-        
-        # 获取更新后的统计数据
+        else:
+            reject_count = sum(1 for r in results if r['is_abnormal'])
+            if reject_count == 0:
+                self.stats_manager.increment_pass()
+            else:
+                self.stats_manager.increment_reject()
+        self._save_stats()
+
+        # UI 控件存活检查，返回主界面后跳过 UI 更新
+        ui_alive = False
+        try:
+            ui_alive = self.detected_parts_label.winfo_exists()
+        except Exception:
+            pass
+        if not ui_alive:
+            return
+
         stats = self.stats_manager.get_statistics()
-        
+        self.detected_parts_label.config(text=f"  {self.image_detection_count}")
         self.pass_count_label.config(text=str(stats["pass"]))
         self.reject_count_label.config(text=str(stats["reject"]))
         self.recycle_count_label.config(text=str(stats["recycle"]))
-        
-        # 计算百分比
         if stats['total'] > 0:
             self.pass_rate_label.config(text=f"{stats['pass_rate']:.1f} %")
             self.reject_rate_label.config(text=f"{stats['reject_rate']:.1f} %")
             self.recycle_rate_label.config(text=f"{stats['recycle_rate']:.1f} %")
-        
-        # 更新时间信息
-        total_time = sum(r['time_ms'] for r in results)
-        avg_confidence = sum(r['confidence'] for r in results) / len(results)
-        
+
         current_time = time.time()
-        timestamp_str = time.strftime("%m/%d/%Y\n%H:%M:%S", time.localtime(current_time))
-        self.timestamp_label.config(text=timestamp_str)
+        self.timestamp_label.config(text=time.strftime("%m/%d/%Y\n%H:%M:%S", time.localtime(current_time)))
+
+        if not results:
+            self.tree_view_panel.update_variable("AppVar.Result", "FAIL")
+            self.tree_view_panel.update_variable("AppVar.Confidence", "0.00%")
+            self.detection_time_label.config(text="0.000 ms")
+            return
+
+        total_fields = len(results)
+        reject_count = sum(1 for r in results if r['is_abnormal'])
+        total_time = sum(r['time_ms'] for r in results)
+        avg_confidence = sum(r['confidence'] for r in results) / total_fields
+
         self.detection_time_label.config(text=f"{total_time:.3f} ms")
-        
-        # 更新系统变量
+
         overall_status = "PASS" if reject_count == 0 else "FAIL"
         self.tree_view_panel.update_variable("AppVar.Result", overall_status)
         self.tree_view_panel.update_variable("AppVar.Confidence", f"{avg_confidence:.2%}")
@@ -1402,8 +1429,14 @@ class RunInterface:
     
     @safe_execute(default_return=None, error_message="手动触发失败")
     def _on_manual_trigger(self):
-        """手动触发按钮回调"""
-        messagebox.showinfo("提示", "手动触发功能待实现")
+        """手动触发按钮/trigger_capture()：触发一次识别。
+
+        只有用户已点击"开始"（is_running == True）时才生效。
+        可能从 periodic 脚本线程调用，trigger_event.set() 本身是线程安全的。
+        """
+        if not self.is_running:
+            return
+        self.trigger_event.set()
     
     @safe_execute(default_return=None, error_message="初始化显示失败")
     def _init_display_on_enter(self):
@@ -1435,7 +1468,10 @@ class RunInterface:
                 self.tree_view_panel.expand_all()
 
         # 延迟100ms执行，确保UI完全初始化
-        self.parent.after(100, self._init_display_on_enter_delayed)
+        if self.main_window and hasattr(self.main_window, 'root'):
+            self.main_window.root.after(100, self._init_display_on_enter_delayed)
+        else:
+            self.parent.after(100, self._init_display_on_enter_delayed)
 
         # 从 saved_ocr_state 读取字段信息，显示在 OCR 节点下
         self._populate_ocr_fields_from_state()
@@ -1453,9 +1489,12 @@ class RunInterface:
             if field_name == "FirstDigitAnchor":
                 continue
             var_path = f"OCR.{field_name}"
+            result_path = f"OCR.{field_name}.Result"
             # 只在节点不存在时添加（避免覆盖已有识别结果）
             if var_path not in self.tree_view_panel._node_map:
                 self.tree_view_panel.update_variable(var_path, "--")
+            if result_path not in self.tree_view_panel._node_map:
+                self.tree_view_panel.update_variable(result_path, "--")
         self.tree_view_panel.expand_all()
 
     def _init_display_on_enter_delayed(self):
@@ -1464,9 +1503,10 @@ class RunInterface:
         trigger_mode = self.camera_controller.get_trigger_mode()
         
         if trigger_mode == "internal":
-            # 内部时钟模式：立即显示视频流（但不启动检测）
-            self.video_loop_running = True
-            self._video_loop_iteration()
+            # 内部时钟模式：确保视频循环在运行（无论是否正在检测）
+            if not self.video_loop_running:
+                self.video_loop_running = True
+                self._video_loop_iteration()
         else:
             # 硬件/软件触发模式：显示当前静止帧
             if self.main_window:
@@ -2172,6 +2212,11 @@ class RunInterface:
     @safe_execute(default_return=None, error_message="更新偏移量显示失败")
     def _update_offset_display(self):
         """更新偏移量显示"""
+        try:
+            if not self.offset_label.winfo_exists():
+                return
+        except Exception:
+            return
         if not self.anchor_detection_enabled:
             self.offset_label.config(text="偏移: 已禁用 [绝对坐标]", fg="#999999")
         elif self.use_manual_offset:
@@ -2317,7 +2362,10 @@ class RunInterface:
                 self._refresh_pending = False
         
         # 延迟50ms执行，避免与其他显示调用冲突
-        self.parent.after(50, delayed_refresh)
+        if self.main_window and hasattr(self.main_window, 'root'):
+            self.main_window.root.after(50, delayed_refresh)
+        else:
+            self.parent.after(50, delayed_refresh)
     
     @ErrorHandler.handle_file_error
     def _open_image_file(self):

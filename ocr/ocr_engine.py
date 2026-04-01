@@ -75,16 +75,17 @@ class OCREngine:
         # 清空现有模板
         self.templates.clear()
         
-        # 遍历模板目录
+        # 遍历模板目录（递归扫描子文件夹，兼容 solutions/方案名/字段名/*.png 结构）
         template_count = 0
-        for filename in os.listdir(self.template_dir):
-            if filename.endswith(('.png', '.jpg', '.bmp')):
-                template_img = self._load_single_template(filename)
-                if template_img is not None:
-                    # 从文件名提取字符（假设文件名格式为 "字符.png"）
-                    char = os.path.splitext(filename)[0]
-                    self.templates[char] = template_img
-                    template_count += 1
+        for root, dirs, files in os.walk(self.template_dir):
+            for filename in files:
+                if filename.endswith(('.png', '.jpg', '.bmp')):
+                    full_path = os.path.join(root, filename)
+                    template_img = self._load_single_template_path(full_path)
+                    if template_img is not None:
+                        char = os.path.splitext(filename)[0]
+                        self.templates[char] = template_img
+                        template_count += 1
         
         if template_count > 0:
             self.template_loaded = True
@@ -94,9 +95,15 @@ class OCREngine:
     
     @safe_execute(default_return=None, log_error=True, error_message="加载模板文件失败")
     def _load_single_template(self, filename: str) -> Optional[np.ndarray]:
-        """加载单个模板文件"""
+        """加载单个模板文件（按文件名，相对于 template_dir）"""
         template_path = os.path.join(self.template_dir, filename)
         return cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+
+    @safe_execute(default_return=None, log_error=True, error_message="加载模板文件失败")
+    def _load_single_template_path(self, full_path: str) -> Optional[np.ndarray]:
+        """加载单个模板文件（按完整路径）"""
+        img_data = np.fromfile(full_path, dtype=np.uint8)
+        return cv2.imdecode(img_data, cv2.IMREAD_GRAYSCALE)
     
     @ErrorHandler.handle_ui_error
     def recognize(self, image: np.ndarray) -> RecognitionResult:
