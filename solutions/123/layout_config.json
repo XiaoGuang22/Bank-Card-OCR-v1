@@ -7,10 +7,6 @@
             136
         ]
     },
-    "image_size": {
-        "width": 1600,
-        "height": 1200
-    },
     "strategy": "anchor_based",
     "anchor_rect": [
         178,
