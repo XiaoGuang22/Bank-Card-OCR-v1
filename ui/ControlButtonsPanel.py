@@ -78,14 +78,7 @@ class ControlButtonsPanel(tk.Frame):
         # 第一行：选择解决方案、编辑容忍度、设置显示、历史数据回顾
         # 第二行：重置检测、重置统计数据、手动触发、开始
         button_configs = [
-            # 第一行
-            [
-                ("select_solution", "选择解决方\n案"),
-                ("edit_tolerance", "编辑容忍度"),
-                ("display_settings", "设置显示"),
-                ("history_review", "历史数据\n回顾"),
-            ],
-            # 第二行
+            # 第一行（原第二行）
             [
                 ("reset_detection", "打开图片"),
                 ("reset_statistics", "重置\n统计数据"),
@@ -139,7 +132,7 @@ class ControlButtonsPanel(tk.Frame):
             buttons_container.grid_columnconfigure(i, weight=1)
         
         # 配置行权重
-        for i in range(2):
+        for i in range(1):
             buttons_container.grid_rowconfigure(i, weight=1)
     
     def _on_button_click(self, button_key):

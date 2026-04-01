@@ -128,6 +128,7 @@ class SolutionMakerFrame(tk.Frame):
         
         # 布局配置
         self.roi_layout_config = {}  # 已保存的布局配置（从磁盘加载或已保存）
+        self._pending_field_props = {}  # 临时存储字段属性，保存全部时才写入
         self.temp_layout_config = {}  # 临时布局配置（执行提取后，保存前）
         
         # 字段类型
@@ -572,6 +573,12 @@ class SolutionMakerFrame(tk.Frame):
         try:
             self.load_solution_data()
             pass  # print removed
+
+            # 同步字段信息到主窗口
+            if self.main_window and hasattr(self.main_window, 'ocr_field_types'):
+                self.main_window.ocr_field_types = [
+                    f for f in self.field_types if f != "FirstDigitAnchor"
+                ]
             
             # ★★★ 关键修复：将加载的布局配置同步到主窗口的saved_ocr_state ★★★
             if self.main_window and hasattr(self.main_window, 'saved_ocr_state'):
@@ -1407,8 +1414,10 @@ class SolutionMakerFrame(tk.Frame):
         pass  # print removed
         # 5. 在预览画布上居中显示图像（始终居中，无论大小）
         cx, cy = cw//2, ch//2
-        
-        # print(f"   → 图像中心点: ({cx}, {cy})")
+
+        # 保存图像偏移量，供右键坐标计算使用
+        self._img_offset_x = cx - new_w // 2
+        self._img_offset_y = cy - new_h // 2
         
         # 添加白色边框效果（使用标签以便删除）
         display_canvas.create_rectangle(
@@ -1518,7 +1527,155 @@ class SolutionMakerFrame(tk.Frame):
             )
         
         pass
-    
+
+    def _on_roi_right_click(self, event):
+        """右键点击画布，检测是否点中某个 ROI 框，弹出属性菜单"""
+        display_canvas = self.preview_canvas if self.preview_canvas else self.canvas
+        cx = display_canvas.canvasx(event.x)
+        cy = display_canvas.canvasy(event.y)
+
+        offset_x = getattr(self, '_img_offset_x', 0)
+        offset_y = getattr(self, '_img_offset_y', 0)
+
+        hit_field = None
+
+        # 先检查临时框（temp_rects）
+        for rect in self.temp_rects:
+            ft = rect['field_type']
+            if ft == "FirstDigitAnchor":
+                continue
+            x1 = min(rect['start'][0], rect['end'][0])
+            y1 = min(rect['start'][1], rect['end'][1])
+            x2 = max(rect['start'][0], rect['end'][0])
+            y2 = max(rect['start'][1], rect['end'][1])
+            if x1 <= cx <= x2 and y1 <= cy <= y2:
+                hit_field = ft
+                break
+
+        # 再检查已保存的 roi_layout_config
+        if hit_field is None:
+            for field, data in self.roi_layout_config.items():
+                if field == "FirstDigitAnchor":
+                    continue
+                if isinstance(data, dict):
+                    coords = data.get("search_area", data.get("roi"))
+                else:
+                    coords = data
+                if not coords or len(coords) != 4:
+                    continue
+                x, y, w, h = coords
+                sx = offset_x + x * self.zoom_scale
+                sy = offset_y + y * self.zoom_scale
+                sw = w * self.zoom_scale
+                sh = h * self.zoom_scale
+                if sx <= cx <= sx + sw and sy <= cy <= sy + sh:
+                    hit_field = field
+                    break
+
+        if hit_field:
+            menu = tk.Menu(self, tearoff=0)
+            menu.add_command(label=f"字段属性：{hit_field}",
+                             command=lambda f=hit_field, e=event: self._show_field_props_dialog(f, e.x_root, e.y_root))
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+    def _show_field_props_dialog(self, field_name, x_root=None, y_root=None):
+        """弹出字段属性设置对话框（方案一：精简版）"""
+        # 优先从临时属性读取，其次从 roi_layout_config 读取
+        field_props = self._pending_field_props.get(field_name) or \
+                      (self.roi_layout_config.get(field_name, {}).get("field_props", {})
+                       if isinstance(self.roi_layout_config.get(field_name), dict) else {})
+
+        dlg = tk.Toplevel(self)
+        dlg.title(f"字段属性 - {field_name}")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        # 定位到右键点击位置附近
+        dlg.update_idletasks()
+        if x_root is not None and y_root is not None:
+            dlg.geometry(f"+{x_root + 10}+{y_root + 10}")
+        else:
+            # 默认居中于画布
+            display_canvas = self.preview_canvas if self.preview_canvas else self.canvas
+            rx = display_canvas.winfo_rootx() + display_canvas.winfo_width() // 2
+            ry = display_canvas.winfo_rooty() + display_canvas.winfo_height() // 2
+            dlg.geometry(f"+{rx}+{ry}")
+
+        bg = "white"
+        dlg.configure(bg=bg)
+        pad = dict(padx=12, pady=6)
+
+        # 字段名（只读）
+        tk.Label(dlg, text="字段名称:", bg=bg, font=("微软雅黑", 9)).grid(row=0, column=0, sticky="w", **pad)
+        tk.Label(dlg, text=field_name, bg=bg, font=("微软雅黑", 9, "bold"), fg="#0055A4").grid(row=0, column=1, sticky="w", **pad)
+
+        # 启用/禁用
+        var_enabled = tk.BooleanVar(value=field_props.get("enabled", True))
+        tk.Label(dlg, text="启用识别:", bg=bg, font=("微软雅黑", 9)).grid(row=1, column=0, sticky="w", **pad)
+        tk.Checkbutton(dlg, variable=var_enabled, bg=bg, activebackground=bg).grid(row=1, column=1, sticky="w", **pad)
+
+        # 最小置信度阈值
+        var_conf = tk.StringVar(value=str(int(field_props.get("min_confidence", 75))))
+        tk.Label(dlg, text="最小置信度 (0-100):", bg=bg, font=("微软雅黑", 9)).grid(row=2, column=0, sticky="w", **pad)
+        conf_frame = tk.Frame(dlg, bg=bg)
+        conf_frame.grid(row=2, column=1, sticky="w", **pad)
+        tk.Scale(conf_frame, from_=0, to=100, orient=tk.HORIZONTAL, variable=var_conf,
+                 length=150, showvalue=False
+                 ).pack(side=tk.LEFT)
+        tk.Entry(conf_frame, textvariable=var_conf, width=4,
+                 font=("微软雅黑", 9), justify="center"
+                 ).pack(side=tk.LEFT, padx=(4, 0))
+
+        # 期望字符数
+        var_char_count = tk.StringVar(value=str(field_props.get("expected_chars", 0)))
+        tk.Label(dlg, text="期望字符数 (0=不限):", bg=bg, font=("微软雅黑", 9)).grid(row=3, column=0, sticky="w", **pad)
+        tk.Entry(dlg, textvariable=var_char_count, width=6, font=("微软雅黑", 9)).grid(row=3, column=1, sticky="w", **pad)
+
+        # 忽略空格
+        var_ignore_space = tk.BooleanVar(value=field_props.get("ignore_space", False))
+        tk.Label(dlg, text="忽略空格:", bg=bg, font=("微软雅黑", 9)).grid(row=4, column=0, sticky="w", **pad)
+        tk.Checkbutton(dlg, variable=var_ignore_space, bg=bg, activebackground=bg).grid(row=4, column=1, sticky="w", **pad)
+
+        # 分隔线
+        tk.Frame(dlg, bg="#E0E0E0", height=1).grid(row=5, column=0, columnspan=2, sticky="ew", padx=12, pady=4)
+
+        def on_save():
+            try:
+                conf_val = int(float(var_conf.get()))
+                char_count = int(var_char_count.get())
+            except ValueError:
+                messagebox.showwarning("输入错误", "置信度和字符数必须为整数", parent=dlg)
+                return
+            conf_val = max(0, min(100, conf_val))
+            char_count = max(0, char_count)
+
+            new_props = {
+                "enabled": var_enabled.get(),
+                "min_confidence": conf_val,
+                "expected_chars": char_count,
+                "ignore_space": var_ignore_space.get()
+            }
+            # 只写入临时属性字典，不动 roi_layout_config（点"保存全部"时才合并）
+            self._pending_field_props[field_name] = new_props
+            # 标记该字段为"已修改未保存"，刷新画布让标签变回临时状态
+            if field_name in self.roi_layout_config:
+                if isinstance(self.roi_layout_config[field_name], dict):
+                    self.roi_layout_config[field_name]['_modified'] = True
+            self._refresh_canvas_image()
+            dlg.destroy()
+
+        btn_frame = tk.Frame(dlg, bg=bg)
+        btn_frame.grid(row=6, column=0, columnspan=2, pady=(0, 10))
+        tk.Button(btn_frame, text="确定", font=("微软雅黑", 9), bg="#F0F0F0",
+                  relief=tk.RAISED, padx=20, pady=3, cursor="hand2",
+                  command=on_save).pack(side=tk.LEFT, padx=8)
+        tk.Button(btn_frame, text="取消", font=("微软雅黑", 9), bg="#F0F0F0",
+                  relief=tk.RAISED, padx=20, pady=3, cursor="hand2",
+                  command=dlg.destroy).pack(side=tk.LEFT, padx=8)
+
     def _draw_saved_rois_centered(self, cx, cy, img_w, img_h):
         """
         绘制已保存的ROI框（居中显示模式）
@@ -1569,10 +1726,16 @@ class SolutionMakerFrame(tk.Frame):
                 sw = w * self.zoom_scale
                 sh = h * self.zoom_scale
                 
-                # 已保存的布局：实线，较细
+                # 已保存的布局：实线，较细；若属性被修改则显示为临时
+                is_modified = isinstance(data, dict) and data.get('_modified', False)
                 line_width = 3 if is_anchor or field == "FirstDigitAnchor" else 2
-                dash = None  # 实线
-                tag_text = f"★ {field}" if is_anchor else f"[已保存] {field}"
+                dash = (4, 4) if is_modified else None
+                if is_anchor:
+                    tag_text = f"★ {field}"
+                elif is_modified:
+                    tag_text = f"[临时] {field}"
+                else:
+                    tag_text = f"[已保存] {field}"
                 
                 # 绘制矩形框
                 display_canvas.create_rectangle(
@@ -1655,17 +1818,13 @@ class SolutionMakerFrame(tk.Frame):
     
     def _bind_canvas_events(self):
         """绑定画布事件（激活时）"""
-        # 绑定到preview_canvas用于ROI框选
         display_canvas = self.preview_canvas if self.preview_canvas else self.canvas
         display_canvas.bind("<ButtonPress-1>", self.on_mouse_down)
         display_canvas.bind("<B1-Motion>", self.on_mouse_drag)
         display_canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
         display_canvas.bind("<Control-MouseWheel>", self.on_zoom)
-        
-        # 绑定画布大小改变事件（关键修复：自动缩放图像）
         display_canvas.bind("<Configure>", self._on_canvas_resize)
-        
-        pass  # print removed
+        display_canvas.bind("<ButtonPress-3>", self._on_roi_right_click)
     def _on_canvas_resize(self, event):
         """
         画布大小改变事件处理
@@ -1858,6 +2017,16 @@ class SolutionMakerFrame(tk.Frame):
         self.rect_start = None
         self.rect_end = None
         self.current_rect_id = None
+
+        # 框选完成后，若该字段还没有临时属性，初始化默认值（不写入 roi_layout_config）
+        if current_type and current_type != "FirstDigitAnchor":
+            if current_type not in self._pending_field_props:
+                self._pending_field_props[current_type] = {
+                    "enabled": True,
+                    "min_confidence": 75,
+                    "expected_chars": 0,
+                    "ignore_space": False
+                }
     
     def on_zoom(self, event):
         """
@@ -2055,6 +2224,15 @@ class SolutionMakerFrame(tk.Frame):
             messagebox.showinfo("成功", f"成功处理 {processed_count} 个字段！")
         else:
             messagebox.showwarning("提示", "没有成功处理任何字段")
+
+        # 将 temp_layout_config 合并到 roi_layout_config，使右键能命中已提取的字段框
+        for field, layout_data in self.temp_layout_config.items():
+            existing = self.roi_layout_config.get(field, {})
+            existing_props = existing.get("field_props", {}) if isinstance(existing, dict) else \
+                             self._pending_field_props.get(field, {})
+            merged = dict(layout_data)
+            merged["field_props"] = existing_props
+            self.roi_layout_config[field] = merged
     
     def _get_roi_coords(self):
         """
@@ -3480,12 +3658,15 @@ class SolutionMakerFrame(tk.Frame):
         
         # 合并临时布局到正式布局
         if self.temp_layout_config:
-            # print(f"🔄 合并 {len(self.temp_layout_config)} 个临时布局到正式布局")
             for field, layout_data in self.temp_layout_config.items():
                 self.roi_layout_config[field] = layout_data
                 pass  # print removed
-            # 清空临时布局
             self.temp_layout_config = {}
+
+        # 清除所有 _modified 标记（保存后恢复为"已保存"状态）
+        for field, data in self.roi_layout_config.items():
+            if isinstance(data, dict) and data.get('_modified'):
+                data.pop('_modified', None)
         
         # 保存布局配置
         self._save_layout_config(base_dir)
@@ -3563,14 +3744,18 @@ class SolutionMakerFrame(tk.Frame):
         for field, config in self.roi_layout_config.items():
             if field == "FirstDigitAnchor":
                 continue
-            
-            # 兼容两种格式：字典格式和列表格式
             if isinstance(config, dict):
                 r = config["roi"]
+                # 优先用 _pending_field_props，其次用 roi_layout_config 里的
+                field_props = self._pending_field_props.get(field) or config.get("field_props", {})
             else:
                 r = config
-            
+                field_props = self._pending_field_props.get(field, {})
             layout_data["fields"][field] = r
+            if field_props:
+                if "field_props" not in layout_data:
+                    layout_data["field_props"] = {}
+                layout_data["field_props"][field] = field_props
         
         # 3. 保存到文件
         layout_path = os.path.join(base_dir, "layout_config.json")

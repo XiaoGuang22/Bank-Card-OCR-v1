@@ -162,9 +162,12 @@ class RunInterface:
         
         # 初始化统计管理器
         self.stats_manager = StatsManager()
-        
+
         # 添加图片检测计数器
         self.image_detection_count = 0
+
+        # 从主窗口恢复上次统计数据
+        self._load_stats()
         
         # 初始化OCR引擎（使用默认模板目录）
         template_dir = "solutions/测试方案"  # 默认模板目录
@@ -178,6 +181,7 @@ class RunInterface:
         self.is_running = False
         self.inspection_thread = None
         self.stop_event = threading.Event()
+        self.status_label = None  # 状态栏已移除，保留引用避免报错
         
         # 性能统计
         self.last_trigger_time = None
@@ -259,6 +263,11 @@ class RunInterface:
         
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        # 让 scrollable_frame 宽度跟随 canvas 宽度自适应
+        def _on_canvas_configure(event):
+            canvas.itemconfig(canvas.find_withtag("all")[0], width=event.width)
+        canvas.bind("<Configure>", _on_canvas_configure)
         
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -286,7 +295,7 @@ class RunInterface:
             relief=tk.GROOVE,
             bd=2
         )
-        tree_label_frame.pack(fill=tk.BOTH, expand=True, padx=(10, 5), pady=3)
+        tree_label_frame.pack(fill=tk.BOTH, expand=True, padx=(5, 5), pady=3)
         
         self.tree_view_panel = TreeViewPanel(tree_label_frame)
         self.tree_view_panel.pack(fill=tk.BOTH, expand=True, padx=3, pady=3)
@@ -300,7 +309,7 @@ class RunInterface:
             relief=tk.GROOVE,
             bd=2
         )
-        control_label_frame.pack(fill=tk.X, padx=(10, 5), pady=3)
+        control_label_frame.pack(fill=tk.X, padx=(5, 5), pady=3)
         
         # 锚点检测控制
         anchor_frame = tk.Frame(control_label_frame, bg="white")
@@ -395,20 +404,6 @@ class RunInterface:
         )
         self.control_buttons_panel.pack(fill=tk.X, padx=5, pady=5)
         
-        # 4. 状态栏
-        status_frame = tk.Frame(scrollable_frame, bg="white")
-        status_frame.pack(fill=tk.X, padx=(10, 5), pady=(3, 10))
-        
-        self.status_label = tk.Label(
-            status_frame,
-            text="就绪",
-            font=("Microsoft YaHei UI", 9),
-            bg="white",
-            fg="#666",
-            anchor="w"
-        )
-        self.status_label.pack(fill=tk.X, padx=5)
-        
         # 5. 进入运行界面时，如果是内部时钟模式，自动显示视频流（不启动检测）
         self._init_display_on_enter()
     
@@ -436,8 +431,8 @@ class RunInterface:
         
         self.detected_parts_label = tk.Label(
             detected_container,
-            text="  60",
-            font=("Microsoft YaHei UI", 18, "bold"),  # 增大字体
+            text="  0",
+            font=("Microsoft YaHei UI", 18, "bold"),
             bg="white",
             anchor="w"
         )
@@ -492,7 +487,7 @@ class RunInterface:
         
         self.pass_count_label = tk.Label(
             pass_info,
-            text="37",
+            text="0",
             font=("Microsoft YaHei UI", 10, "bold"),
             bg="white"
         )
@@ -500,7 +495,7 @@ class RunInterface:
         
         self.pass_rate_label = tk.Label(
             pass_info,
-            text="61.7 %",
+            text="0.0 %",
             font=("Microsoft YaHei UI", 10),
             bg="white"
         )
@@ -530,7 +525,7 @@ class RunInterface:
         
         self.reject_count_label = tk.Label(
             reject_info,
-            text="23",
+            text="0",
             font=("Microsoft YaHei UI", 10, "bold"),
             bg="white"
         )
@@ -538,7 +533,7 @@ class RunInterface:
         
         self.reject_rate_label = tk.Label(
             reject_info,
-            text="38.3 %",
+            text="0.0 %",
             font=("Microsoft YaHei UI", 10),
             bg="white"
         )
@@ -600,7 +595,7 @@ class RunInterface:
         
         self.timestamp_label = tk.Label(
             timestamp_frame,
-            text="1/30/2026\n20:36:52.48",
+            text="--",
             font=("Microsoft YaHei UI", 10),
             bg="white",
             justify=tk.CENTER
@@ -624,7 +619,7 @@ class RunInterface:
         
         self.detection_time_label = tk.Label(
             detection_time_frame,
-            text="0.320 ms",
+            text="-- ms",
             font=("Microsoft YaHei UI", 10),
             bg="white"
         )
@@ -647,7 +642,7 @@ class RunInterface:
         
         self.trigger_freq_label = tk.Label(
             trigger_freq_frame,
-            text="9.914 Hz",
+            text="-- Hz",
             font=("Microsoft YaHei UI", 10),
             bg="white"
         )
@@ -692,7 +687,7 @@ class RunInterface:
         self.control_buttons_panel.enable_start_button(False)
         
         # 更新状态栏
-        self.status_label.config(text="运行中...")
+        self.status_label and self.status_label.config(text="运行中...")
         
         # 启动检测线程
         self.inspection_thread = threading.Thread(
@@ -727,7 +722,7 @@ class RunInterface:
         self.control_buttons_panel.enable_start_button(True)
         
         # 更新状态栏
-        self.status_label.config(text="已停止")
+        self.status_label and self.status_label.config(text="已停止")
         
         print("✅ 检测流程已停止")
     
@@ -833,6 +828,27 @@ class RunInterface:
         
         self.recycle_count_label.config(text=str(stats["recycle"]))
         self.recycle_rate_label.config(text=f"{stats['recycle_rate']:.1f} %")
+
+        # 持久化保存统计数据
+        self._save_stats()
+
+        # 把识别结果写回主窗口，供控制界面 AppVar 树显示
+        if self.main_window and hasattr(self.main_window, 'ocr_last_results'):
+            for r in results:
+                self.main_window.ocr_last_results[r['field_name']] = {
+                    "value": r['result'],
+                    "result": "FAIL" if r['is_abnormal'] else "PASS"
+                }
+
+        # 同步识别结果到主窗口
+        if self.main_window and hasattr(self.main_window, 'ocr_last_results'):
+            self.main_window.ocr_last_results = {
+                r['field_name']: {
+                    "value": r['result'],
+                    "result": "FAIL" if r['is_abnormal'] else "PASS",
+                    "confidence": f"{r['confidence']:.2%}"
+                } for r in results
+            }
         
         # 更新时间信息
         # 时间戳（格式：M/D/YYYY\nHH:MM:SS.mm）
@@ -853,17 +869,57 @@ class RunInterface:
         )
     
     @safe_execute(default_return=None, error_message="重置统计数据失败")
+    def _save_stats(self):
+        """把当前统计数据写回主窗口内存"""
+        if not self.main_window or not hasattr(self.main_window, 'persistent_stats'):
+            return
+        stats = self.stats_manager.get_statistics()
+        self.main_window.persistent_stats = {
+            "pass": stats["pass"],
+            "reject": stats["reject"],
+            "recycle": stats["recycle"],
+            "image_detection_count": self.image_detection_count,
+            "timestamp": self.timestamp_label.cget("text") if self.timestamp_label else "--",
+            "detection_time": self.detection_time_label.cget("text") if self.detection_time_label else "-- ms",
+            "trigger_freq": self.trigger_freq_label.cget("text") if self.trigger_freq_label else "-- Hz",
+            "tree_vars": self._get_tree_vars()
+        }
+
+    def _get_tree_vars(self):
+        """获取系统变量树的所有节点值"""
+        result = {}
+        try:
+            for path, node_id in self.tree_view_panel._node_map.items():
+                values = self.tree_view_panel._tree.item(node_id, "values")
+                tags = self.tree_view_panel._tree.item(node_id, "tags")
+                result[path] = {
+                    "value": values[0] if values else "",
+                    "tag": tags[0] if tags else ""
+                }
+        except Exception:
+            pass
+        return result
+
+    def _load_stats(self):
+        """从主窗口内存恢复统计数据"""
+        if not self.main_window or not hasattr(self.main_window, 'persistent_stats'):
+            return
+        data = self.main_window.persistent_stats
+        for _ in range(data.get("pass", 0)):
+            self.stats_manager.increment_pass()
+        for _ in range(data.get("reject", 0)):
+            self.stats_manager.increment_reject()
+        for _ in range(data.get("recycle", 0)):
+            self.stats_manager.increment_recycle()
+        self.image_detection_count = data.get("image_detection_count", 0)
+
     def reset_statistics(self):
         """重置统计数据"""
-        print("🔄 重置统计数据...")
-        
         # 重置统计管理器
         self.stats_manager.reset()
-        
-        # 重置图片检测计数器
         self.image_detection_count = 0
-        
-        # 重置显示
+
+        # 重置检测结果显示
         self.detected_parts_label.config(text="  0")
         self.skipped_parts_label.config(text="  0")
         self.pass_count_label.config(text="0")
@@ -872,8 +928,17 @@ class RunInterface:
         self.reject_rate_label.config(text="0.0 %")
         self.recycle_count_label.config(text="0")
         self.recycle_rate_label.config(text="0.0 %")
-        
-        print("✅ 统计数据已重置")
+
+        # 重置时间信息
+        self.timestamp_label.config(text="--")
+        self.detection_time_label.config(text="-- ms")
+        self.trigger_freq_label.config(text="-- Hz")
+
+        # 重置系统变量树
+        self.tree_view_panel.clear_all()
+
+        # 清除持久化数据
+        self._save_stats()
     
     @safe_execute(default_return=None, error_message="返回按钮处理失败")
     def _on_back_button_click(self):
@@ -936,7 +1001,7 @@ class RunInterface:
         print(f"📋 ROI字段: {list(roi_layout.keys())}")
         
         # 更新状态
-        self.status_label.config(text="正在识别...")
+        self.status_label and self.status_label.config(text="正在识别...")
         
         # 执行识别
         recognition_results = self._run_recognition_on_image(image)
@@ -945,7 +1010,8 @@ class RunInterface:
         self._update_recognition_results(recognition_results)
         
         # 更新状态
-        self.status_label.config(text="识别完成")
+        overall = "PASS" if all(not r['is_abnormal'] for r in results) else "FAIL"
+        self.status_label and self.status_label.config(text=f"识别完成 - {overall}")
     
     @safe_execute(default_return=None, error_message="识别器初始化失败")
     def _initialize_recognizer(self):
@@ -1122,21 +1188,62 @@ class RunInterface:
         t_end = time.perf_counter()
         field_time_ms = (t_end - t_start) * 1000
         
-        # 计算平均置信度
+        # 计算平均置信度和最小置信度
         avg_conf = total_conf / len(valid_chars) if valid_chars else 0
+        min_char_conf = min((d['score'] for d in char_details), default=0)
         
         # 推断字段类型
         final_type = self.recognizer.infer_field_type(result_str) if field_name == "Auto" else field_name
         
-        # 异常检测
+        # 异常检测（读取字段属性配置）
         is_abnormal = False
         notes = []
-        if avg_conf < 0.85:
+
+        # 从 layout_config 读取该字段的属性
+        layout_cfg = self.recognizer.layout_config
+        field_props = layout_cfg.get("field_props", {}).get(field_name, {})
+        enabled = field_props.get("enabled", True)
+        min_conf = field_props.get("min_confidence", 80) / 100.0
+        expected_chars = field_props.get("expected_chars", 0)
+        ignore_space = field_props.get("ignore_space", False)
+
+        # 忽略空格
+        if ignore_space:
+            result_str = result_str.replace(" ", "")
+
+        # 字段禁用
+        if not enabled:
+            notes.append("字段已禁用")
+            return {
+                "field_name": field_name,
+                "result": "",
+                "field_type": field_name,
+                "confidence": 0.0,
+                "time_ms": 0.0,
+                "box": box_coords,
+                "char_details": [],
+                "is_abnormal": False,
+                "notes": ["字段已禁用（跳过）"]
+            }
+
+        # 置信度检查：任意一个字符低于阈值则失败，并用 ? 替代该字符
+        low_conf_chars = []
+        for d in char_details:
+            if d['score'] < min_conf:
+                low_conf_chars.append(d['char'])
+                d['char'] = '?'
+
+        if low_conf_chars:
             is_abnormal = True
-            notes.append("整体置信度低")
-        if final_type == "CardNumber" and not result_str.isdigit():
+            notes.append(f"最低字符置信度 {min_char_conf:.0%} 低于阈值 {min_conf:.0%}")
+
+        # 重新拼接结果（低置信度字符已替换为 ?）
+        result_str = "".join(d['char'] for d in char_details)
+
+        # 期望字符数检查
+        if expected_chars > 0 and len(result_str) != expected_chars:
             is_abnormal = True
-            notes.append("含非数字")
+            notes.append(f"字符数 {len(result_str)} 不符合期望 {expected_chars}")
         
         return {
             "field_name": field_name,
@@ -1237,20 +1344,18 @@ class RunInterface:
         self.tree_view_panel.update_variable("AppVar.Result", overall_status)
         self.tree_view_panel.update_variable("AppVar.Confidence", f"{avg_confidence:.2%}")
         
-        # 添加识别结果到系统变量
+        # 添加识别结果到系统变量，每个字段包含识别值和通过/失败状态
         for result in results:
-            # 保持原始字段名，不转换为中文
             var_name = f"OCR.{result['field_name']}"
             self.tree_view_panel.update_variable(var_name, result['result'])
+            field_status = "FAIL" if result['is_abnormal'] else "PASS"
+            self.tree_view_panel.update_variable(f"{var_name}.Result", field_status)
+            # 字段名节点也染色
+            color = "fail" if result['is_abnormal'] else "pass"
+            self.tree_view_panel.set_node_color(var_name, color)
         
         # 展开OCR节点以显示识别结果
         self.tree_view_panel.expand_all()
-        
-        # 显示简洁的完成提示
-        messagebox.showinfo("识别完成", 
-            f"字符识别完成！\n\n"
-            f"识别字段: {total_fields} 个\n"
-            f"识别结果已显示在系统变量中")
         
         print("=== 识别结果 ===")
         for result in results:
@@ -1303,10 +1408,56 @@ class RunInterface:
     @safe_execute(default_return=None, error_message="初始化显示失败")
     def _init_display_on_enter(self):
         """进入运行界面时初始化显示"""
+        # 恢复持久化的统计数据到 UI
+        stats = self.stats_manager.get_statistics()
+        self.detected_parts_label.config(text=f"  {self.image_detection_count}")
+        self.pass_count_label.config(text=str(stats["pass"]))
+        self.pass_rate_label.config(text=f"{stats['pass_rate']:.1f} %")
+        self.reject_count_label.config(text=str(stats["reject"]))
+        self.reject_rate_label.config(text=f"{stats['reject_rate']:.1f} %")
+        self.recycle_count_label.config(text=str(stats["recycle"]))
+        self.recycle_rate_label.config(text=f"{stats['recycle_rate']:.1f} %")
+
+        # 恢复时间信息和系统变量
+        if self.main_window and hasattr(self.main_window, 'persistent_stats'):
+            data = self.main_window.persistent_stats
+            self.timestamp_label.config(text=data.get("timestamp", "--"))
+            self.detection_time_label.config(text=data.get("detection_time", "-- ms"))
+            self.trigger_freq_label.config(text=data.get("trigger_freq", "-- Hz"))
+            # 恢复系统变量树
+            tree_vars = data.get("tree_vars", {})
+            if tree_vars:
+                for path, info in tree_vars.items():
+                    self.tree_view_panel.update_variable(path, info.get("value", ""))
+                    tag = info.get("tag", "")
+                    if tag in ("pass", "fail"):
+                        self.tree_view_panel.set_node_color(path, tag)
+                self.tree_view_panel.expand_all()
+
         # 延迟100ms执行，确保UI完全初始化
         self.parent.after(100, self._init_display_on_enter_delayed)
+
+        # 从 saved_ocr_state 读取字段信息，显示在 OCR 节点下
+        self._populate_ocr_fields_from_state()
     
     @safe_execute(default_return=None, error_message="延迟初始化显示失败")
+    def _populate_ocr_fields_from_state(self):
+        """从 saved_ocr_state 读取字段定义，预填充到系统变量 OCR 节点下"""
+        if not self.main_window or not hasattr(self.main_window, 'saved_ocr_state'):
+            return
+        state = self.main_window.saved_ocr_state
+        roi_layout = state.get('roi_layout', {})
+        if not roi_layout:
+            return
+        for field_name in roi_layout:
+            if field_name == "FirstDigitAnchor":
+                continue
+            var_path = f"OCR.{field_name}"
+            # 只在节点不存在时添加（避免覆盖已有识别结果）
+            if var_path not in self.tree_view_panel._node_map:
+                self.tree_view_panel.update_variable(var_path, "--")
+        self.tree_view_panel.expand_all()
+
     def _init_display_on_enter_delayed(self):
         """延迟执行的初始化显示"""
         # 获取当前触发模式
