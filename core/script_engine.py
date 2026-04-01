@@ -193,8 +193,36 @@ class ScriptEngine:
         """
         code = self._scripts.get(trigger, "").strip()
         if not code:
-            # 未配置脚本，静默跳过（需求 7.5）
             return
+
+        # 预处理：把 "[变量名%格式]" 替换为 Python 格式化表达式
+        # 例：str1 = "[CardNumber%s][Confidence%.2f]"
+        # 变为：str1 = ("%s" % CardNumber) + ("%.2f" % Confidence)
+        import re as _re
+
+        def _expand_format_str(line: str) -> str:
+            """把赋值右边字符串中的 [变量名%格式] 展开为 Python 表达式"""
+            # 匹配形如：varname = "..." 的赋值语句
+            m = _re.match(r'^(\s*\w+\s*=\s*)"(.*)"(.*)$', line)
+            if not m:
+                return line
+            prefix, fmt_str, suffix = m.group(1), m.group(2), m.group(3)
+            # 找所有 [变量名%格式] 片段
+            parts = _re.split(r'(\[[^\]]+%[^\]]+\])', fmt_str)
+            if len(parts) == 1:
+                return line  # 没有格式片段，原样返回
+            exprs = []
+            for part in parts:
+                pm = _re.match(r'^\[([^%\]]+)(%[^\]]+)\]$', part)
+                if pm:
+                    var, fmt = pm.group(1).strip(), pm.group(2)
+                    exprs.append(f'("{fmt}" % {var})')
+                elif part:
+                    exprs.append(f'"{part}"')
+            return prefix + ' + '.join(exprs) + suffix
+
+        processed_lines = [_expand_format_str(ln) for ln in code.splitlines()]
+        code = '\n'.join(processed_lines)
 
         sys_var_names = set(self._sys_vars.keys())
 

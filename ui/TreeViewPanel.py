@@ -62,7 +62,7 @@ class TreeViewPanel(tk.Frame):
             tree_container,
             columns=("value",),
             show="tree headings",
-            height=6  # 从10减小到6
+            height=9
         )
         
         # 配置列
@@ -82,6 +82,10 @@ class TreeViewPanel(tk.Frame):
         # 布局
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 配置颜色标签
+        self._tree.tag_configure("pass", foreground="#1a7a1a")
+        self._tree.tag_configure("fail", foreground="#cc2200")
     
     @ErrorHandler.handle_ui_error
     def _init_default_nodes(self):
@@ -163,11 +167,30 @@ class TreeViewPanel(tk.Frame):
                 if current_path not in self._node_map:
                     self.add_node(parent_path, part, "")
         
-        # 更新节点值
+        # 更新节点值，并根据 PASS/FAIL 应用颜色
         node_id = self._node_map[path]
         self._tree.item(node_id, values=(str(value),))
+        val_upper = str(value).upper()
+        if val_upper == "PASS":
+            self._tree.item(node_id, tags=("pass",))
+        elif val_upper == "FAIL":
+            self._tree.item(node_id, tags=("fail",))
+        else:
+            self._tree.item(node_id, tags=())
         
         logger.debug(f"变量更新成功: {path} = {value}")
+
+    def set_node_color(self, path, status):
+        """直接设置节点颜色（'pass'/'fail'/'normal'）"""
+        if path not in self._node_map:
+            return
+        node_id = self._node_map[path]
+        if status == "pass":
+            self._tree.item(node_id, tags=("pass",))
+        elif status == "fail":
+            self._tree.item(node_id, tags=("fail",))
+        else:
+            self._tree.item(node_id, tags=())
     
     @safe_execute(default_return=None, log_error=True, error_message="获取变量失败")
     def get_variable(self, path):
