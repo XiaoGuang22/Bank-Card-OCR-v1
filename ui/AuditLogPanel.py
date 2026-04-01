@@ -24,6 +24,37 @@ _LEVEL_COLORS = {
 }
 _DEFAULT_FG = "#333333"
 
+# 操作类型中文映射
+_TYPE_ZH = {
+    "login":               "登录认证",
+    "user_management":     "用户管理",
+    "camera_settings":     "相机设置",
+    "tool_settings":       "工具设置",
+    "template_operation":  "模板操作",
+    "inspection_control":  "检测控制",
+    "log_management":      "日志管理",
+}
+
+# 具体动作中文映射
+_ACTION_ZH = {
+    "login_success":        "登录成功",
+    "login_failed":         "登录失败",
+    "logout":               "退出登录",
+    "open_user_management": "打开用户管理",
+    "add_user":             "新增用户",
+    "delete_user":          "删除用户",
+    "modify_role":          "修改角色",
+    "modify_password":      "修改密码",
+    "modify_trigger_source":"修改触发源",
+    "modify_ocr_region":    "修改OCR区域",
+    "new_solution":         "新建方案",
+    "save_solution":        "保存方案",
+    "load_solution":        "加载方案",
+    "start_inspection":     "开始检测",
+    "stop_inspection":      "停止检测",
+    "clear_logs":           "清理日志",
+}
+
 
 class AuditLogPanel:
     """操作日志面板"""
@@ -77,8 +108,22 @@ class AuditLogPanel:
         self._search_var = tk.StringVar()
         search_entry = tk.Entry(search_bar, textvariable=self._search_var,
                                 font=("Microsoft YaHei UI", 8), width=20,
-                                relief=tk.SOLID, bd=1)
+                                relief=tk.SOLID, bd=1, fg="#999999")
+        search_entry.insert(0, "用户名 / 角色")
         search_entry.pack(side=tk.LEFT, padx=2)
+
+        def _on_focus_in(e):
+            if search_entry.get() == "用户名 / 角色":
+                search_entry.delete(0, tk.END)
+                search_entry.config(fg="#333333")
+
+        def _on_focus_out(e):
+            if not search_entry.get():
+                search_entry.insert(0, "用户名 / 角色")
+                search_entry.config(fg="#999999")
+
+        search_entry.bind("<FocusIn>", _on_focus_in)
+        search_entry.bind("<FocusOut>", _on_focus_out)
         search_entry.bind("<Return>", lambda e: self._load_recent())
 
         tk.Button(
@@ -131,6 +176,8 @@ class AuditLogPanel:
     def _load_recent(self):
         """从数据库加载最近日志（在后台线程执行，避免阻塞 UI）"""
         keyword = self._search_var.get().strip() if hasattr(self, "_search_var") else ""
+        if keyword == "用户名 / 角色":
+            keyword = ""
         threading.Thread(
             target=self._fetch_and_render,
             args=(keyword,),
@@ -157,14 +204,16 @@ class AuditLogPanel:
             result = r["operation_result"]
             tag_result = "success" if result == "成功" else "fail"
             tag_row = "even" if i % 2 == 0 else "odd"
+            op_type = _TYPE_ZH.get(r["operation_type"], r["operation_type"])
+            op_action = _ACTION_ZH.get(r["operation_action"], r["operation_action"])
             self._tree.insert(
                 "", tk.END,
                 values=(
                     ts_str,
                     r["user_name"],
                     r["user_role"],
-                    r["operation_type"],
-                    r["operation_action"],
+                    op_type,
+                    op_action,
                     r["target_object"],
                     result,
                     r["ip_address"],
