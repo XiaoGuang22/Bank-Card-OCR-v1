@@ -1,8 +1,7 @@
 {
   "ports": [
     5024,
-    5025,
-    5026
+    5025
   ],
   "periodic_interval_ms": 100,
   "auto_start": false

@@ -1,9 +1,0 @@
-{
-    "custom_fields": [],
-    "all_fields": [
-        "CardNumber",
-        "Name",
-        "Date",
-        "FirstDigitAnchor"
-    ]
-}
