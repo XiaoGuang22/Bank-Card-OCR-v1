@@ -54,6 +54,7 @@ collectPicture/
 workspaces/
 solutions/
 .kiro/specs/solution-management/
+.hypothesis/
 
 # Test files
 test_*.py
