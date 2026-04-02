@@ -684,13 +684,41 @@ class RunInterface:
             if not self.ocr_engine.load_templates():
                 messagebox.showerror("错误", "无法加载OCR模板，请检查解决方案配置")
                 return
+
+        # 如果是从 workspace 加载的解决方案，用 workspace 里的 layout_config 覆盖
+        try:
+            workspace_manager = getattr(self.main_window, 'workspace_manager', None)
+            ws_name = getattr(self.main_window, '_current_workspace_name', None)
+            if workspace_manager and ws_name:
+                import os as _os, json as _json
+                lc_path = _os.path.join(workspace_manager.workspaces_root, ws_name, "layout_config.json")
+                if _os.path.isfile(lc_path):
+                    with open(lc_path, "r", encoding="utf-8") as f:
+                        self.ocr_engine.recognizer.layout_config = _json.load(f)
+        except Exception:
+            pass
         
         # 设置运行状态（必须在启动视频循环之前）
         self.is_running = True
         self.stop_event.clear()
-        
-        # 获取当前触发模式
-        trigger_mode = self.camera_controller.get_trigger_mode()
+
+        # 应用 config 里的传感器设置到相机（确保加载解决方案后的设置生效）
+        try:
+            import config as _cfg
+            _sensor = _cfg.get_user_sensor_settings()
+            _mode = _sensor.get('trigger_mode', 'internal')
+            _interval = _sensor.get('interval_ms', 1000)
+            if self.camera_controller:
+                self.camera_controller.set_trigger_mode(_mode, interval_ms=_interval)
+        except Exception as e:
+            print(f"⚠️ 应用传感器设置失败: {e}")
+
+        # 获取当前触发模式：优先从 config 读，相机不可用时也能正常工作
+        try:
+            import config as _cfg
+            trigger_mode = _cfg.get_user_sensor_settings().get('trigger_mode', 'internal')
+        except Exception:
+            trigger_mode = self.camera_controller.get_trigger_mode() if self.camera_controller else 'internal'
         
         # 根据触发模式决定显示方式
         if trigger_mode == "internal":
@@ -749,8 +777,12 @@ class RunInterface:
     @safe_execute(default_return=None, error_message="检测主循环异常")
     def _inspection_loop(self):
         """检测主循环（在独立线程中运行）"""
-        # 获取触发模式和间隔时间
-        trigger_mode = self.camera_controller.get_trigger_mode()
+        # 获取触发模式：优先从 config 读，不依赖相机连接状态
+        try:
+            import config as _cfg
+            trigger_mode = _cfg.get_user_sensor_settings().get('trigger_mode', 'internal')
+        except Exception:
+            trigger_mode = self.camera_controller.get_trigger_mode() if self.camera_controller else 'internal'
 
         # 获取内部时钟间隔（毫秒）
         interval_ms = 1000  # 默认1秒

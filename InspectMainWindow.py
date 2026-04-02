@@ -1061,10 +1061,14 @@ class CameraController:
                 if not self._restart_acquisition():
                     success = False
             
-            # 4. 保存触发模式到内存（无论是否成功，都保存用户的意图）
+            # 4. 保存触发模式到内存和 config（无论相机是否成功，都保存用户的意图）
             if success:
                 self.current_trigger_mode = mode
-                print(f"✅ 触发模式已保存到内存: {mode}")
+                try:
+                    import config
+                    config.USER_SENSOR_SETTINGS['trigger_mode'] = mode
+                except Exception:
+                    pass
             
             return success
         
@@ -1158,80 +1162,20 @@ class CameraController:
     
     def get_trigger_mode(self):
         """
-        获取当前触发模式
-        
-        返回:
-            str: 触发模式 ("internal", "hardware", "software", "unknown")
+        获取当前触发模式。
+        优先从 config.USER_SENSOR_SETTINGS 读取，确保与用户设置一致。
+        有相机时同步到硬件，无相机时也能正常返回。
         """
-        # 优先从内存读取（更可靠）
+        try:
+            import config
+            return config.get_user_sensor_settings().get('trigger_mode', 'internal')
+        except Exception:
+            pass
+        # 降级：从内存缓存读
         if hasattr(self, 'current_trigger_mode'):
             return self.current_trigger_mode
-        
-        # 如果内存中没有，尝试从硬件读取
-        if not self.acq_device:
-            return "unknown"
-        
-        try:
-            from System import String
-            
-            # 获取触发模式
-            trigger_mode = None
-            
-            # 方法1：StrongBox（新版本）
-            try:
-                from clr import StrongBox
-                mode_ref = StrongBox[String]()
-                if self.acq_device.GetFeatureValue("TriggerMode", mode_ref):
-                    trigger_mode = mode_ref.Value
-            except (ImportError, AttributeError):
-                pass
-            
-            # 方法2：Reference（旧版本）
-            if trigger_mode is None:
-                try:
-                    import clr
-                    mode_ref = clr.Reference[String]()
-                    if self.acq_device.GetFeatureValue("TriggerMode", mode_ref):
-                        trigger_mode = mode_ref.Value
-                except:
-                    pass
-            
-            if trigger_mode:
-                if trigger_mode == "Off":
-                    return "internal"
-                elif trigger_mode == "On":
-                    # 进一步检查触发源
-                    trigger_source = None
-                    
-                    # 方法1：StrongBox
-                    try:
-                        from clr import StrongBox
-                        source_ref = StrongBox[String]()
-                        if self.acq_device.GetFeatureValue("TriggerSource", source_ref):
-                            trigger_source = source_ref.Value
-                    except (ImportError, AttributeError):
-                        pass
-                    
-                    # 方法2：Reference
-                    if trigger_source is None:
-                        try:
-                            import clr
-                            source_ref = clr.Reference[String]()
-                            if self.acq_device.GetFeatureValue("TriggerSource", source_ref):
-                                trigger_source = source_ref.Value
-                        except:
-                            pass
-                    
-                    if trigger_source == "Software":
-                        return "software"
-                    else:
-                        return "hardware"
-            
-            return "unknown"
-        
-        except Exception as e:
-            return "unknown"
-    
+        return 'internal'
+
     def get_gamma(self):
         """获取当前伽马值"""
         if not self.acq_device:
@@ -1494,6 +1438,16 @@ class InspectMainWindow:
             self.script_engine = None
         self._tcp_settings_frame = None
         self._script_editor_frame = None
+
+        # 初始化 WorkspaceManager
+        from managers.workspace_manager import WorkspaceManager
+        import os as _os
+        self.workspace_manager = WorkspaceManager(
+            workspaces_root=_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "workspaces")
+        )
+
+        # 是否有未保存的变更标志
+        self._is_dirty = False
         
         # 绑定窗口状态改变事件（监听最大化/还原）
         self.root.bind("<Configure>", self._on_window_configure)
@@ -1503,6 +1457,9 @@ class InspectMainWindow:
         
         # 启动视频循环
         self._start_video_loop()
+
+        # 绑定主窗口关闭事件
+        self.root.protocol("WM_DELETE_WINDOW", self._on_main_window_close)
     
     def _on_window_configure(self, event):
         """
@@ -2352,6 +2309,109 @@ class InspectMainWindow:
             # 关闭窗口
             self.root.quit()
             pass  # print removed
+
+    def _mark_dirty(self):
+        """标记有未保存的变更"""
+        self._is_dirty = True
+
+    def _has_unsaved_changes(self) -> bool:
+        """检查是否有未保存的配置变更"""
+        return self._is_dirty
+
+    def _on_main_window_close(self):
+        """
+        主窗口关闭事件处理：
+        - 若无未保存变更，直接关闭
+        - 否则弹出三选一对话框（保存/不保存/取消）
+        """
+        from tkinter import messagebox, simpledialog
+
+        if not self._has_unsaved_changes():
+            self._do_close()
+            return
+
+        # 弹出三选一对话框
+        result = messagebox.askyesnocancel(
+            "保存解决方案",
+            "当前有未保存的配置，是否保存为解决方案后再退出？\n\n"
+            "是：保存后退出\n否：直接退出\n取消：返回程序"
+        )
+
+        if result is None:
+            # 取消：不执行任何操作
+            return
+        elif result is False:
+            # 不保存：直接关闭
+            self._do_close()
+        else:
+            # 保存：弹出输入框，预填自动生成的名称
+            from datetime import datetime
+            default_name = datetime.now().strftime("解决方案_%Y%m%d_%H%M%S")
+            name = simpledialog.askstring(
+                "保存解决方案",
+                "请输入解决方案名称：",
+                initialvalue=default_name,
+                parent=self.root
+            )
+            if name is None:
+                # 用户取消了输入，不关闭
+                return
+            name = name.strip()
+            if not name:
+                messagebox.showwarning("警告", "解决方案名称不能为空")
+                return
+
+            # 执行保存
+            try:
+                solution_name = self.saved_ocr_state.get('solution_name')
+                if not solution_name:
+                    messagebox.showwarning("警告", "请先在工具界面选择一个字体库方案")
+                    return
+
+                font_solution_path = os.path.join("solutions", solution_name)
+                sensor_settings = self._get_current_sensor_settings()
+                script_settings = self._get_current_script_settings()
+                tcp_settings = self._get_current_tcp_settings()
+
+                overwrite = False
+                if self.workspace_manager.workspace_exists(name):
+                    overwrite = messagebox.askyesno("确认覆盖", f"解决方案 '{name}' 已存在，是否覆盖？")
+                    if not overwrite:
+                        return
+
+                self.workspace_manager.save_workspace(
+                    name=name,
+                    font_solution_path=font_solution_path,
+                    sensor_settings=sensor_settings,
+                    script_settings=script_settings,
+                    tcp_settings=tcp_settings,
+                    overwrite=overwrite,
+                    preview_image=self.saved_ocr_state.get('image'),
+                )
+                self._is_dirty = False
+            except Exception as e:
+                messagebox.showerror("保存失败", f"保存解决方案时出错：{e}")
+                return
+
+            self._do_close()
+
+    def _do_close(self):
+        """执行实际的关闭操作（停止服务并销毁窗口）"""
+        try:
+            self.video_loop_running = False
+            if self.video_loop_id:
+                self.root.after_cancel(self.video_loop_id)
+            if hasattr(self, 'tcp_service') and self.tcp_service:
+                self.tcp_service.stop()
+            if hasattr(self, 'script_engine') and self.script_engine:
+                self.script_engine.stop_periodic()
+            if self.cam:
+                self.cam.cleanup()
+        except Exception:
+            pass
+        finally:
+            self.root.destroy()
+
     def logout(self):
         """退出登录，销毁当前窗口并重新弹出登录界面"""
         try:
@@ -2443,8 +2503,9 @@ class InspectMainWindow:
             self.sidebar_frame, 
             self.cam, 
             on_back_callback=self.on_sensor_settings_back,
-            camera_controller=self.cam,  # 传递相机控制器
-            on_trigger_callback=self.on_software_trigger_executed  # 新增：触发后的回调
+            camera_controller=self.cam,
+            on_trigger_callback=self.on_software_trigger_executed,
+            on_settings_changed=self._mark_dirty,
         )
         # 使用 pack 填满整个侧边栏，并增加一点内部 padding
         settings_panel.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -2627,7 +2688,8 @@ class InspectMainWindow:
 
         win = tk.Toplevel(self.root)
         win.title(f"脚本编辑 — {trigger}")
-        win.geometry("700x520")
+        win.geometry("700x600")
+        win.minsize(700, 600)
         win.grab_set()
         win.configure(bg="white")
 
@@ -3353,13 +3415,77 @@ class InspectMainWindow:
         # 2. 在 template_frame 中创建解决方案管理面板（覆盖显示）
         self.solution_panel = SolutionManagementPanel(
             parent=self.template_frame,
-            solutions_root=None,
-            on_solution_selected=self._on_solution_panel_selected
+            workspace_manager_or_root=self.workspace_manager,
+            main_window_or_callback=self
         )
         self.solution_panel.pack(fill=tk.BOTH, expand=True)
         self.template_frame.update_idletasks()
         
         pass  # print removed
+
+    def _get_current_sensor_settings(self) -> dict:
+        """从 config.USER_SENSOR_SETTINGS 读取当前传感器参数"""
+        import config
+        return config.get_user_sensor_settings()
+
+    def _get_current_script_settings(self) -> dict:
+        """优先从 ScriptEditorFrame.get_scripts() 读取，否则返回空脚本字典"""
+        if self._script_editor_frame is not None:
+            try:
+                return self._script_editor_frame.get_scripts()
+            except Exception:
+                pass
+        # 从 script_engine 读取
+        if self.script_engine is not None:
+            try:
+                scripts = self.script_engine.get_scripts()
+                return scripts
+            except Exception:
+                pass
+        return {
+            "solution_initialize": "",
+            "pre_image_process": "",
+            "post_image_process": "",
+            "periodic": "",
+            "periodic_interval_ms": 100,
+        }
+
+    def _get_current_tcp_settings(self) -> dict:
+        """从 TcpSettingsFrame 和 TcpService 读取当前 TCP 设置"""
+        ports = []
+        auto_start_ports = []
+
+        # 从 TcpSettingsFrame 读取端口列表
+        if self._tcp_settings_frame is not None:
+            try:
+                ports = list(self._tcp_settings_frame._port_frames.keys())
+            except Exception:
+                pass
+
+        # 从 TcpService 读取当前运行中的端口（作为 auto_start_ports）
+        if self.tcp_service is not None:
+            try:
+                auto_start_ports = list(self.tcp_service.running_ports)
+            except Exception:
+                pass
+
+        # 若 TcpSettingsFrame 不存在，从 tcp_config.json 读取
+        if not ports:
+            try:
+                import json
+                tcp_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcp_config.json")
+                if os.path.exists(tcp_config_path):
+                    with open(tcp_config_path, "r", encoding="utf-8") as f:
+                        tcp_data = json.load(f)
+                    ports = tcp_data.get("ports", [])
+            except Exception:
+                pass
+
+        return {
+            "ports": ports,
+            "auto_start_ports": auto_start_ports,
+        }
+
     def _hide_solution_panel(self):
         """隐藏解决方案管理面板，恢复字符模板区域（覆盖模式）"""
         if self.solution_panel is None:
@@ -3526,14 +3652,27 @@ class InspectMainWindow:
         
         # 6. 将面板添加到侧边栏（必须在恢复状态之前，确保UI已创建）
         self.solution_maker_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        pass  # print removed
-        
-        # 7. 如果有保存的状态，恢复显示
+
+        # 7. 无论是否有图片，只要有方案名就恢复下拉框
+        solution_name = self.saved_ocr_state.get('solution_name')
+        if solution_name:
+            if hasattr(self.solution_maker_frame, '_refresh_solution_list'):
+                self.solution_maker_frame._refresh_solution_list()
+            self.solution_maker_frame.current_solution_name = solution_name
+            if hasattr(self.solution_maker_frame, 'var_solution_name'):
+                self.solution_maker_frame.var_solution_name.set(solution_name)
+            # 如果有图片，提前赋值，让 on_solution_selected 执行时已有图片
+            if self.saved_ocr_state.get('image') is not None:
+                self.solution_maker_frame.original_image = self.saved_ocr_state['image'].copy()
+                # 重新按当前画布尺寸计算缩放比例，不使用保存的旧值
+                if hasattr(self.solution_maker_frame, '_get_90_percent_scale'):
+                    self.solution_maker_frame.zoom_scale = self.solution_maker_frame._get_90_percent_scale()
+            # 延迟触发，确保 template_canvas_widget 已赋值且 __init__ 的延迟调用已完成
+            self.root.after(100, self.solution_maker_frame.on_solution_selected)
+
+        # 8. 如果有保存的图片状态，恢复完整显示（延迟到 on_solution_selected 之后）
         if has_saved_state:
-            pass  # print removed
-            self._restore_ocr_state_immediate()
-        else:
-            print("⚠️ 跳过状态恢复（没有保存的状态）")
+            self.root.after(300, self._restore_ocr_state_immediate)
         
         # 9. 绑定Canvas大小改变事件,自动重新布局
         def on_canvas_resize(event):
@@ -3549,6 +3688,13 @@ class InspectMainWindow:
         pass  # print removed
     def on_solution_maker_back(self):
         """从解决方案制作返回"""
+        # 返回前先保存当前状态（图片、布局等）
+        if self.solution_maker_frame:
+            try:
+                self.save_ocr_state()
+            except Exception:
+                pass
+
         # 清理解决方案制作面板
         if self.solution_maker_frame:
             # 调用 cleanup 方法（如果存在）
@@ -3904,7 +4050,8 @@ class InspectMainWindow:
             # 4. 恢复方案名称
             if self.saved_ocr_state['solution_name']:
                 self.solution_maker_frame.current_solution_name = self.saved_ocr_state['solution_name']
-                # 更新方案选择下拉框
+                if hasattr(self.solution_maker_frame, '_refresh_solution_list'):
+                    self.solution_maker_frame._refresh_solution_list()
                 if hasattr(self.solution_maker_frame, 'var_solution_name'):
                     self.solution_maker_frame.var_solution_name.set(self.saved_ocr_state['solution_name'])
                 pass  # print removed
@@ -3997,12 +4144,17 @@ class InspectMainWindow:
             # 5. 恢复方案名称
             if self.saved_ocr_state['solution_name']:
                 self.solution_maker_frame.current_solution_name = self.saved_ocr_state['solution_name']
-                # 更新方案选择下拉框
+                # 先刷新下拉框列表，再设置选中值
+                if hasattr(self.solution_maker_frame, '_refresh_solution_list'):
+                    self.solution_maker_frame._refresh_solution_list()
                 if hasattr(self.solution_maker_frame, 'var_solution_name'):
                     self.solution_maker_frame.var_solution_name.set(self.saved_ocr_state['solution_name'])
                 pass  # print removed
-            # 6. 恢复缩放比例
-            self.solution_maker_frame.zoom_scale = self.saved_ocr_state['zoom_scale']
+            # 6. 重新按当前画布尺寸计算缩放比例（不使用保存的旧值，避免放大）
+            if hasattr(self.solution_maker_frame, '_get_90_percent_scale'):
+                self.solution_maker_frame.zoom_scale = self.solution_maker_frame._get_90_percent_scale()
+            elif self.saved_ocr_state['zoom_scale']:
+                self.solution_maker_frame.zoom_scale = self.saved_ocr_state['zoom_scale']
             pass  # print removed
             # 7. 延迟刷新显示（等待UI完全初始化，但时间更短）
             pass  # print removed

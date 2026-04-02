@@ -711,13 +711,17 @@ class SolutionMakerFrame(tk.Frame):
             
             # 加载其他字段
             if "fields" in config_data:
+                field_props_map = config_data.get("field_props", {})
                 for field_name, field_coords in config_data["fields"].items():
                     self.roi_layout_config[field_name] = {
                         "roi": field_coords,
-                        "search_area": field_coords,  # 普通字段的search_area和roi相同
-                        "is_anchor": False
+                        "search_area": field_coords,
+                        "is_anchor": False,
+                        "field_props": field_props_map.get(field_name, {}),
                     }
-                    pass  # print removed
+                    # 同步到 _pending_field_props，让置信度对话框能读到
+                    if field_name in field_props_map:
+                        self._pending_field_props[field_name] = field_props_map[field_name]
                     # 确保字段类型被注册
                     if field_name not in self.field_types:
                         self._register_field(field_name, create_ui=True)
@@ -1204,27 +1208,20 @@ class SolutionMakerFrame(tk.Frame):
     
     def _get_90_percent_scale(self):
         """
-        计算90%高度缩放比例（原始大小）
-        
-        高度占预览区的90%，宽度按比例缩放
-        
-        返回:
-            float: 缩放比例
+        计算90%缩放比例，同时适配宽高，确保图片完整显示在画布内
         """
         if self.original_image is None:
             return 1.0
-        
-        # 获取图像尺寸
+
         h, w = self.original_image.shape[:2]
-        
-        # 使用preview_canvas的尺寸
+
         display_canvas = self.preview_canvas if self.preview_canvas else self.canvas
-        
-        # 获取画布尺寸（如果画布未显示，使用默认值）
+        canvas_w = display_canvas.winfo_width() or 800
         canvas_h = display_canvas.winfo_height() or 600
-        
-        # 计算缩放比例（高度90%），但不超过1.0（不放大原图）
-        scale = (canvas_h * 0.90) / h
+
+        scale_h = (canvas_h * 0.90) / h
+        scale_w = (canvas_w * 0.90) / w
+        scale = min(scale_h, scale_w)
         return min(scale, 1.0)
     
     def _get_height_fit_scale(self):
@@ -1454,8 +1451,9 @@ class SolutionMakerFrame(tk.Frame):
         
         # 7. 绘制已保存的ROI框（需要调整坐标以适应居中显示）
         self._draw_saved_rois_centered(cx, cy, new_w, new_h)
-        
-        pass
+
+        # 8. 把用户绘制的临时框（temp_rect）提升到最顶层，防止被图片遮住
+        display_canvas.tag_raise("temp_rect")
     def _draw_saved_rois(self):
         """
         绘制已保存的ROI框（左上角对齐模式，已废弃）
@@ -4056,7 +4054,10 @@ class SolutionMakerFrame(tk.Frame):
         # 更新下拉框
         if hasattr(self, 'combo_solution'):
             self.combo_solution['values'] = solution_names
-            # print(f"🔄 已刷新方案列表: {len(solution_names)} 个方案")
+            # 如果当前方案名在列表里，自动选中
+            if self.current_solution_name and self.current_solution_name in solution_names:
+                if hasattr(self, 'var_solution_name'):
+                    self.var_solution_name.set(self.current_solution_name)
     
     # ====================================================================
     # 资源管理方法 (Task 11)

@@ -27,19 +27,17 @@ CAMERA_DEFAULT_PARAMS = {
     'trigger_mode': 'Off',          # 默认触发模式（Off = 自由运行）
 }
 
-# 用户传感器设置（保存用户上次设置的参数）
-USER_SENSOR_SETTINGS = {
+# 用户传感器设置（程序启动时的默认值，每次启动都重置为此）
+DEFAULT_SENSOR_SETTINGS = {
     'trigger_mode': 'internal',     # 触发模式: internal/software
-    'interval_ms': 1084,            # 内部定时间隔（毫秒）
-    # 'delay_ms': 0,                # 检测触发延时（已移除）
-    # 'delay_enabled': False,       # 已移除
-    # 'strobe_enabled': False,      # 已移除
-    # 'strobe_duration_ms': 64.0,   # 已移除
-    # 'strobe_offset_us': 1000,     # 已移除
+    'interval_ms': 66,              # 内部定时间隔（毫秒）
     'exposure_ms': 25.0,            # 曝光时间（毫秒）
     'brightness': 50,               # 亮度（0-100%）
     'contrast': 50,                 # 对比度（0-100%）
 }
+
+# 运行时传感器设置（程序启动时从 DEFAULT_SENSOR_SETTINGS 初始化）
+USER_SENSOR_SETTINGS = DEFAULT_SENSOR_SETTINGS.copy()
 
 # 对比度调整方案配置
 CONTRAST_METHOD = 'lut'  # 'lut' 或 'black_level' 或 'software'

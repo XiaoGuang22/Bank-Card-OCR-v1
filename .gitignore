@@ -50,8 +50,10 @@ output/
 debug_output/
 collectPicture/
 
-# Solutions (可选：如果不想提交用户创建的方案)
-# solutions/
+# User data - not tracked
+workspaces/
+solutions/
+.kiro/specs/solution-management/
 
 # Test files
 test_*.py

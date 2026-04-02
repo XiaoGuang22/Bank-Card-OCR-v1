@@ -237,7 +237,7 @@ class ScriptEditorFrame(tk.Frame):
             relief="raised",
             cursor="hand2",
             padx=10,
-            pady=3,
+            pady=6,
         )
 
         tk.Button(btn_row, text="检查语法", bg="#5B9BD5", fg="white",

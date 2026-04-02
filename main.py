@@ -30,19 +30,8 @@ def launch_main_window(username, role):
     """登录成功后启动主窗口"""
     root = tk.Tk()
     app = InspectMainWindow(root, username, role)
-
-    def on_closing():
-        try:
-            if hasattr(app, 'video_loop_running'):
-                app.video_loop_running = False
-            if hasattr(app, 'cam') and app.cam:
-                app.cam.cleanup()
-        except Exception:
-            pass
-        finally:
-            root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_closing)
+    # InspectMainWindow.__init__ 已通过 root.protocol("WM_DELETE_WINDOW", self._on_main_window_close)
+    # 绑定了关闭事件（含保存提示），此处不再覆盖
     root.mainloop()
 
 
@@ -63,6 +52,27 @@ def main():
 
 if __name__ == "__main__":
     try:
+        import traceback
+
+        # 捕获 tkinter 回调中的异常（否则会静默崩溃）
+        def _tk_exception_handler(exc_type, exc_value, exc_tb):
+            msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            print(msg)
+            try:
+                with open("crash.log", "a", encoding="utf-8") as f:
+                    import datetime
+                    f.write(f"\n[{datetime.datetime.now()}]\n{msg}\n")
+            except Exception:
+                pass
+            # 弹出错误对话框，不崩溃
+            try:
+                import tkinter.messagebox as mb
+                mb.showerror("程序错误", f"{exc_type.__name__}: {exc_value}\n\n详情已写入 crash.log")
+            except Exception:
+                pass
+
+        tk.Tk.report_callback_exception = lambda self, *args: _tk_exception_handler(*args)
+
         main()
     except KeyboardInterrupt:
         sys.exit(0)

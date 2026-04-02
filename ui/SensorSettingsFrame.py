@@ -25,12 +25,13 @@ class SensorSettingsFrame(tk.Frame):
     """
     传感器设置面板：点击主界面'传感器'按钮后加载到侧边栏
     """
-    def __init__(self, parent, controller, on_back_callback, camera_controller=None, on_trigger_callback=None):
+    def __init__(self, parent, controller, on_back_callback, camera_controller=None, on_trigger_callback=None, on_settings_changed=None):
         super().__init__(parent, bg="white")
         self.controller = controller
         self.on_back = on_back_callback
         self.camera = camera_controller  # 保存相机控制器引用
         self.on_trigger = on_trigger_callback  # 保存触发回调函数
+        self.on_settings_changed = on_settings_changed  # 传感器参数变更通知回调
         
         # === 样式配置 ===
         self.style = ttk.Style()
@@ -338,7 +339,11 @@ class SensorSettingsFrame(tk.Frame):
         
         print("\n✅ 传感器设置应用完成")
         print("="*60)
-        
+
+        # 通知主窗口传感器参数已变更
+        if self.on_settings_changed:
+            safe_call(self.on_settings_changed)
+
         # 返回主界面
         if self.on_back:
             safe_call(self.on_back)
