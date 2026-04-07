@@ -3043,7 +3043,10 @@ class InspectMainWindow:
 
         def _on_close():
             if big_tree:
-                big_tree.unbind("<Double-Button-1>")
+                try:
+                    big_tree.unbind("<Double-Button-1>")
+                except Exception:
+                    pass
             win.destroy()
 
         win.protocol("WM_DELETE_WINDOW", _on_close)
