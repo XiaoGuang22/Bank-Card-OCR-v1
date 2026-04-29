@@ -21,6 +21,10 @@ AUTO_CLEAN_DAYS = 90          # 保留最近 N 天
 AUTO_CLEAN_MAX_MB = 100       # 超过此大小（MB）时触发清理
 
 
+# control_settings 下的相机切换动作
+CAMERA_SWITCH_ACTIONS = ("switch_camera", "auto_switch_camera")
+
+
 def _get_local_ip():
     """获取本机 IP 地址"""
     try:

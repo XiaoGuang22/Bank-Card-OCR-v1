@@ -33,6 +33,7 @@ _TYPE_ZH = {
     "template_operation":  "模板操作",
     "inspection_control":  "检测控制",
     "log_management":      "日志管理",
+    "control_settings":    "控制设置",
 }
 
 # 具体动作中文映射
@@ -53,6 +54,8 @@ _ACTION_ZH = {
     "start_inspection":     "开始检测",
     "stop_inspection":      "停止检测",
     "clear_logs":           "清理日志",
+    "switch_camera":        "手动切换相机",
+    "auto_switch_camera":   "自动切换相机",
 }
 
 
