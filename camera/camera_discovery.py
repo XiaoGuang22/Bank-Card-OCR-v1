@@ -33,9 +33,11 @@ class CameraInfo:
 
     @property
     def display_name(self) -> str:
-        """返回 'CAM-A (192.168.10.11)' 格式的显示名"""
-        label = self.name if self.name else self.ip
-        return f"{label} ({self.ip})"
+        """返回 'CAM-A (192.168.10.11)' 格式的显示名，若无名称则只显示 IP"""
+        if self.name:
+            return f"{self.name} ({self.ip})"
+        else:
+            return self.ip  # 无名称时只显示 IP，不重复
 
     @property
     def target_object_str(self) -> str:
@@ -52,15 +54,30 @@ class CameraInfo:
         return hash((self.ip, self.port))
 
 
+def _get_local_ips() -> set:
+    """获取本机所有 IP 地址（用于扫描时排除自身）"""
+    local_ips = {"127.0.0.1"}
+    try:
+        import socket as _socket
+        hostname = _socket.gethostname()
+        addrs = _socket.getaddrinfo(hostname, None, _socket.AF_INET)
+        for addr in addrs:
+            local_ips.add(addr[4][0])
+    except Exception:
+        pass
+    return local_ips
+
+
 def _get_local_network_ranges() -> List[str]:
     """
     获取本机所有活动网卡的网段（CIDR 格式，如 192.168.10.0/24）。
-    跳过回环地址。
+    跳过回环地址和虚拟网卡（Hyper-V、VPN 等产生的 198.18.x.x 等非真实局域网段）。
     """
+    # 只扫描这些私有网段前缀，排除虚拟网卡
+    PRIVATE_PREFIXES = ("192.168.", "10.", "172.")
     ranges = []
     try:
         import socket as _socket
-        # 获取本机所有 IP
         hostname = _socket.gethostname()
         addrs = _socket.getaddrinfo(hostname, None, _socket.AF_INET)
         seen = set()
@@ -68,22 +85,26 @@ def _get_local_network_ranges() -> List[str]:
             ip = addr[4][0]
             if ip.startswith("127.") or ip in seen:
                 continue
+            # 只保留真实私有网段
+            if not any(ip.startswith(p) for p in PRIVATE_PREFIXES):
+                continue
             seen.add(ip)
-            # 假设 /24 子网（可扩展为读取真实掩码）
             network = ipaddress.IPv4Network(f"{ip}/24", strict=False)
             ranges.append(str(network))
     except Exception:
         pass
 
-    # 备用：尝试通过 UDP 路由获取主网卡 IP
+    # 备用：通过 UDP 路由获取主网卡 IP
     if not ranges:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
             s.close()
-            network = ipaddress.IPv4Network(f"{ip}/24", strict=False)
-            ranges.append(str(network))
+            # 备用路由也只保留私有网段
+            if any(ip.startswith(p) for p in PRIVATE_PREFIXES):
+                network = ipaddress.IPv4Network(f"{ip}/24", strict=False)
+                ranges.append(str(network))
         except Exception:
             pass
 
@@ -184,12 +205,14 @@ class CameraDiscovery:
                     on_complete([])
                 return
 
-            # 收集所有待探测 IP（排除网络地址和广播地址）
+            # 收集所有待探测 IP（排除网络地址、广播地址和本机 IP）
+            local_ips = _get_local_ips()
             all_ips = []
             for cidr in ranges:
                 network = ipaddress.IPv4Network(cidr, strict=False)
                 all_ips.extend(
                     str(host) for host in network.hosts()
+                    if str(host) not in local_ips  # 排除本机 IP
                 )
             all_ips = list(set(all_ips))
             total = len(all_ips)
