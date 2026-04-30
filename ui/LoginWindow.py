@@ -1,9 +1,7 @@
 # 导入必要的库
 import tkinter as tk  # 导入tkinter库，用于创建图形用户界面
 from tkinter import ttk, messagebox  # 导入ttk组件和消息框功能
-import json  # 导入json库，用于读写JSON格式的文件
 import os  # 导入os库，用于文件路径操作
-import hashlib  # 导入hashlib库，用于对密码进行哈希处理
 
 try:
     from managers.audit_log_manager import AuditLogManager as _AuditLogManager
@@ -14,6 +12,16 @@ except ImportError:
         from managers.audit_log_manager import AuditLogManager as _AuditLogManager
     except ImportError:
         _AuditLogManager = None
+
+try:
+    from managers.user_manager import UserManager as _UserManager
+except ImportError:
+    try:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from managers.user_manager import UserManager as _UserManager
+    except ImportError:
+        _UserManager = None
 
 # 定义登录窗口类
 class LoginWindow:
@@ -33,8 +41,12 @@ class LoginWindow:
         # 调用窗口居中方法
         self._center_window()
         
-        # 确保用户数据文件存在
-        self._ensure_user_file_exists()
+        # 初始化用户管理器
+        if _UserManager:
+            self.user_manager = _UserManager()
+            self.user_manager.init_default_users()
+        else:
+            self.user_manager = None
         
         # 创建登录界面
         self._create_login_ui()
@@ -57,40 +69,6 @@ class LoginWindow:
         
         # 直接设置窗口的位置和大小，避免先显示在左上角
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
-    
-    # 确保用户数据文件存在的方法
-    def _ensure_user_file_exists(self):
-        """确保用户数据文件存在，如果不存在则创建默认用户"""
-        # 获取当前文件的目录路径，然后再获取上级目录
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        # 构建用户数据文件的完整路径
-        self.user_file = os.path.join(base_dir, "users.json")
-        
-        # 检查用户数据文件是否存在
-        if not os.path.exists(self.user_file):
-            # 如果文件不存在，创建默认管理员用户
-            default_users = {
-                "admin": {
-                    # 对默认密码进行哈希处理
-                    "password": self._hash_password("admin123456"),
-                    # 设置用户角色
-                    "role": "管理员"
-                }
-            }
-            
-            # 打开文件并写入默认用户数据
-            with open(self.user_file, 'w', encoding='utf-8') as f:
-                # 使用json.dump将字典转换为JSON格式并写入文件
-                json.dump(default_users, f, ensure_ascii=False, indent=2)
-    
-    # 对密码进行哈希处理的方法
-    def _hash_password(self, password):
-        """对密码进行哈希处理，增强安全性"""
-        # 使用MD5算法对密码进行哈希处理
-        # 1. 先将密码字符串转换为字节
-        # 2. 使用md5()函数计算哈希值
-        # 3. 使用hexdigest()方法获取十六进制格式的哈希值
-        return hashlib.md5(password.encode()).hexdigest()
     
     # 创建登录界面的方法
     def _create_login_ui(self):
@@ -151,20 +129,14 @@ class LoginWindow:
             # 终止登录流程
             return
         
-        # 读取用户数据
-        try:
-            # 打开用户数据文件
-            with open(self.user_file, 'r', encoding='utf-8') as f:
-                # 加载JSON数据到字典
-                users = json.load(f)
-        except Exception as e:
-            # 显示错误消息
-            messagebox.showerror("错误", f"读取用户数据失败: {e}")
-            # 终止登录流程
+        # 使用用户管理器验证
+        if not self.user_manager:
+            messagebox.showerror("错误", "用户管理器初始化失败")
             return
         
         # 验证用户名是否存在
-        if username not in users:
+        user = self.user_manager.get_user(username)
+        if not user:
             # 记录登录失败日志
             if _AuditLogManager:
                 try:
@@ -177,15 +149,12 @@ class LoginWindow:
             # 终止登录流程
             return
         
-        # 对输入的密码进行哈希处理
-        hashed_password = self._hash_password(password)
-        # 比较密码哈希值是否匹配
-        if users[username]["password"] != hashed_password:
+        # 验证密码
+        if not self.user_manager.verify_password(username, password):
             # 记录登录失败日志
             if _AuditLogManager:
                 try:
-                    role = users[username].get("role", "未知")
-                    _AuditLogManager().log(username, role, "login", "login_failed",
+                    _AuditLogManager().log(username, user["role"], "login", "login_failed",
                                            target_object="密码错误", operation_result="失败")
                 except Exception:
                     pass
@@ -195,7 +164,7 @@ class LoginWindow:
             return
         
         # 登录成功，获取用户角色
-        user_role = users[username]["role"]
+        user_role = user["role"]
         # 记录登录成功日志
         if _AuditLogManager:
             try:

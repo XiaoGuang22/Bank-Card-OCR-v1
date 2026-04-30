@@ -1460,6 +1460,13 @@ class InspectMainWindow:
 
         # 绑定主窗口关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self._on_main_window_close)
+
+        # ★★★ 软件启动后自动触发一次相机扫描（第二块：UI 层）★★★
+        if hasattr(self, 'camera_status_bar') and self.camera_status_bar:
+            self.root.after(500, self.camera_status_bar.trigger_initial_scan)
+
+        # 将主窗口实例挂到 root，供 CameraStatusBar 等子组件访问
+        self.root._app_instance = self
     
     def _on_window_configure(self, event):
         """
@@ -1587,9 +1594,25 @@ class InspectMainWindow:
         self.paned_window.add(display_frame, stretch="always")
 
         # 顶部状态栏
-        top_bar = tk.Frame(display_frame, bg="#808080", height=25)
+        top_bar = tk.Frame(display_frame, bg="#808080", height=32)
         top_bar.pack(fill=tk.X)
-        tk.Label(top_bar, text="(228, 445): 0   Running...", fg="white", bg="#808080", font=("Consolas", 9)).pack(anchor="w", padx=5)
+        top_bar.pack_propagate(False)
+
+        # ★★★ 相机状态栏（第二块：UI 层）★★★
+        try:
+            from ui.CameraStatusBar import CameraStatusBar
+            self.camera_status_bar = CameraStatusBar(
+                top_bar,
+                username=self.username,
+                role=self.role,
+                bg="#808080",
+            )
+            self.camera_status_bar.pack(side=tk.LEFT, fill=tk.Y)
+        except Exception as _e:
+            print(f"[CameraStatusBar] 加载失败: {_e}")
+            self.camera_status_bar = None
+
+        tk.Label(top_bar, text="(228, 445): 0   Running...", fg="white", bg="#808080", font=("Consolas", 9)).pack(side=tk.LEFT, padx=5)
 
         # 创建垂直分割的PanedWindow（上下分割）
         self.vertical_paned = tk.PanedWindow(display_frame, orient=tk.VERTICAL, sashwidth=4, bg="#E0E0E0")

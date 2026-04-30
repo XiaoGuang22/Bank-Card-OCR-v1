@@ -270,9 +270,9 @@ class CameraManager:
 
     def _connect(self, camera: CameraInfo) -> tuple[bool, str]:
         """
-        实际建立到相机的连接。
-        目前通过 TCP 探测验证可达性；
-        后续可替换为真实的 SDK 连接逻辑（如 GenieLiveCamera.init_system）。
+        验证目标 IP:port 是否为可用相机。
+        先做 TCP 连通性探测，再发送 IDENTIFY 握手确认对端是相机服务。
+        若对端无响应（普通 TCP 服务）则判定为非相机，返回失败。
         """
         import socket as _socket
         timeout_s = 2.0
@@ -280,7 +280,25 @@ class CameraManager:
             with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
                 s.settimeout(timeout_s)
                 s.connect((camera.ip, camera.port))
-            return True, "连接成功"
+
+                # 发送握手指令，验证对端是相机服务
+                try:
+                    s.settimeout(0.5)
+                    s.sendall(b"IDENTIFY\r\n")
+                    resp = s.recv(256)
+                    # 收到任何响应都认为是相机服务
+                    # （真实相机会回复标识信息，非相机服务通常不响应或立即断开）
+                    if resp:
+                        return True, "连接成功"
+                    else:
+                        return False, f"对端无响应，可能不是相机：{camera.ip}:{camera.port}"
+                except _socket.timeout:
+                    # 超时无响应：不是相机服务
+                    return False, f"握手超时，对端不是相机服务：{camera.ip}:{camera.port}"
+                except Exception:
+                    # 连接后立即断开：不是相机服务
+                    return False, f"握手失败，对端不是相机服务：{camera.ip}:{camera.port}"
+
         except _socket.timeout:
             return False, f"连接超时：{camera.ip}:{camera.port}"
         except ConnectionRefusedError:
