@@ -233,13 +233,81 @@ class SolutionManagementPanel(tk.Frame):
 
         try:
             data = self.workspace_manager.load_workspace(name)
-            self._apply_loaded_workspace(data)
-            # 记录当前加载的 workspace 名，供运行界面使用
-            if self.main_window:
-                self.main_window._current_workspace_name = name
-            messagebox.showinfo("成功", f"解决方案 '{name}' 加载成功")
         except Exception as e:
             messagebox.showerror("错误", f"加载失败：{e}")
+            return
+
+        # 加载方案前先处理相机自动切换 ──
+        # 从方案文件解析关联相机，若与当前不同则自动切换
+        layout_config = data.get('layout_config', {})
+        if layout_config:
+            try:
+                from managers.camera_manager import CameraManager
+                cam_mgr = CameraManager()
+                target_camera = cam_mgr.parse_camera_from_layout(layout_config)
+                if target_camera and target_camera != cam_mgr.current_camera:
+                    # 获取当前用户信息
+                    username = getattr(self.main_window, 'username', '') if self.main_window else ''
+                    role = getattr(self.main_window, 'role', '') if self.main_window else ''
+
+                    # 用 Event 阻塞等待切换结果（最多 5 秒）
+                    import threading
+                    switch_event = threading.Event()
+                    switch_result = [None, None, None]  # [success, message, role]
+
+                    def _on_auto_switch(success, message, user_role=''):
+                        switch_result[0] = success
+                        switch_result[1] = message
+                        switch_result[2] = user_role
+                        switch_event.set()
+
+                    cam_mgr.auto_switch_camera(
+                        target=target_camera,
+                        user_name=username,
+                        user_role=role,
+                        on_result=_on_auto_switch,
+                    )
+                    switch_event.wait(timeout=5.0)
+
+                    success = switch_result[0]
+                    message = switch_result[1]
+
+                    if success:
+                        # 自动切换成功，提示用户
+                        messagebox.showinfo(
+                            "相机已切换",
+                            f"已自动切换至方案关联相机：{target_camera.display_name}",
+                            parent=self,
+                        )
+                    else:
+                        # 切换失败，按角色区分处理
+                        if role == "操作员":
+                            # 操作员 → 中止加载，提示联系技术员
+                            messagebox.showerror(
+                                "相机不可用",
+                                f"方案关联相机 '{target_camera.display_name}' 不可用，"
+                                f"请联系技术员。\n\n加载已中止，当前连接不变。",
+                                parent=self,
+                            )
+                            return  # 中止加载
+                        else:
+                            # 管理员/技术员 → 不中止，提示可手动另选相机
+                            proceed = messagebox.askyesno(
+                                "相机切换失败",
+                                f"方案关联相机 '{target_camera.display_name}' 不可用。\n\n"
+                                f"是否仍继续加载方案（使用当前相机）？",
+                                parent=self,
+                            )
+                            if not proceed:
+                                return  # 用户选择不继续
+            except Exception:
+                pass  # 相机切换异常不阻断方案加载
+
+        self._apply_loaded_workspace(data)
+        # 记录当前加载的 workspace 名，供运行界面使用
+        if self.main_window:
+            self.main_window._current_workspace_name = name
+        messagebox.showinfo("成功", f"解决方案 '{name}' 加载成功")
 
     def _apply_loaded_workspace(self, data: dict):
         """

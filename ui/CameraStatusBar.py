@@ -232,16 +232,45 @@ class CameraStatusBar(tk.Frame):
         except Exception as e:
             print(f"[CameraStatusBar] 停止检测失败: {e}")
 
-    def _on_switch_result(self, success: bool, message: str):
+    def _on_switch_result(self, success: bool, message: str, user_role: str = ""):
         """切换完成回调（在后台线程中调用，需 after 回到主线程）"""
         def _show():
-            if not success:
+            if success:
+                # 切换成功后提示用户确认旧图像，防止误用
+                self._notify_stale_image()
+            else:
                 messagebox.showerror(
                     "切换相机失败",
                     f"{message}\n\n已自动恢复到上一次成功的连接。",
                     parent=self,
                 )
         self.after(0, _show)
+
+    def _notify_stale_image(self):
+        """
+        FC-17：相机切换成功后，清除主窗口当前显示的旧图像，
+        并提示用户重新拍照或确认。
+        """
+        try:
+            root = self.winfo_toplevel()
+            app = getattr(root, '_app_instance', None)
+
+            # 尝试清除运行界面的当前帧，避免误用旧图像
+            run_interface = getattr(root, '_app_run_interface', None)
+            if run_interface is None and app:
+                run_interface = getattr(app, 'run_interface', None)
+            if run_interface and hasattr(run_interface, 'clear_current_frame'):
+                run_interface.clear_current_frame()
+
+            # 弹出提示（非阻塞）
+            messagebox.showinfo(
+                "相机已切换",
+                f"相机已切换至 {self._manager.current_camera.display_name if self._manager.current_camera else '新相机'}。\n\n"
+                "当前图像已清除，请重新拍照或确认后再继续检测。",
+                parent=self,
+            )
+        except Exception as e:
+            print(f"[CameraStatusBar] 旧图像提示失败: {e}")
 
     # ------------------------------------------------------------------
     # CameraManager 回调（后台线程调用，需 after 回到主线程）

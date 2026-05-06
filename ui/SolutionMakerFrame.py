@@ -3683,11 +3683,20 @@ class SolutionMakerFrame(tk.Frame):
         if self.main_window and hasattr(self.main_window, 'save_ocr_state'):
             self.main_window.save_ocr_state()
             pass  # print removed
-        # 记录保存解决方案日志
+        # 记录保存解决方案日志（target_object 携带相机标识）
         if self.main_window and hasattr(self.main_window, '_audit'):
+            cam_prefix = ""
+            try:
+                from managers.camera_manager import CameraManager
+                cam = CameraManager().current_camera
+                if cam:
+                    label = cam.name if cam.name else cam.ip
+                    cam_prefix = f"{label}@{cam.ip} > "
+            except Exception:
+                pass
             self.main_window._audit(
-                "template_operation", "save_solution",
-                target_object=self.current_solution_name or ""
+                "tool_settings", "save_solution",
+                target_object=f"{cam_prefix}{self.current_solution_name or ''}"
             )
         # 清空编辑器（保留捕获的图像）
         pass  # print removed

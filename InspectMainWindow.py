@@ -2307,6 +2307,23 @@ class InspectMainWindow:
         except Exception:
             pass
 
+    def _camera_target_object(self, suffix: str = "") -> str:
+        """
+        日志字段规范：返回携带当前相机名和 IP 的 target_object 字符串。
+        格式：'CAM-B@192.168.10.22' 或 'CAM-B@192.168.10.22 > 传感器设置面板'
+        若无相机连接则只返回 suffix。
+        """
+        try:
+            from managers.camera_manager import CameraManager
+            cam = CameraManager().current_camera
+            if cam:
+                label = cam.name if cam.name else cam.ip
+                cam_str = f"{label}@{cam.ip}"
+                return f"{cam_str} > {suffix}" if suffix else cam_str
+        except Exception:
+            pass
+        return suffix
+
     def close_application(self):
         """关闭应用程序（正确清理资源）"""
         pass  # print removed
@@ -2506,7 +2523,10 @@ class InspectMainWindow:
             messagebox.showinfo("提示", "操作员无权访问传感器设置")
             return
 
-        self._audit("camera_settings", "modify_trigger_source", target_object="传感器设置面板")
+        self._audit(
+            "camera_settings", "modify_trigger_source",
+            target_object=self._camera_target_object("传感器设置面板"),
+        )
         # 0. 先清除解决方案管理面板（如果存在）
         if self.solution_panel is not None:
             pass  # print removed
@@ -3226,7 +3246,10 @@ class InspectMainWindow:
             messagebox.showinfo("提示", "操作员无权访问工具配置")
             return
 
-        self._audit("tool_settings", "modify_ocr_region", target_object="工具配置面板")
+        self._audit(
+            "tool_settings", "modify_ocr_region",
+            target_object=self._camera_target_object("工具配置面板"),
+        )
         # ★★★ 步骤1: 保存当前画布状态（拍快照）★★★
         # 获取当前画布上的图像（优先获取主界面的真实状态）
         current_image = None

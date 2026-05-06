@@ -371,16 +371,30 @@ class SensorSettingsFrame(tk.Frame):
         
         # 2. 应用曝光时间
         exposure_ms = self.slider_exposure.get()
+        old_exposure_ms = self.camera.get_exposure() or 0.0
         if self.camera.set_exposure(exposure_ms):
             print(f"✅ 曝光时间已应用: {exposure_ms:.2f} ms")
+            # 日志：修改曝光，target_object 携带相机标识
+            self._write_camera_audit(
+                "modify_exposure",
+                old_value=f"{old_exposure_ms:.2f}ms",
+                new_value=f"{exposure_ms:.2f}ms",
+            )
         else:
             print(f"❌ 曝光时间应用失败")
         
         # 3. 应用亮度（映射到增益）
         brightness = self.slider_bright.get()
         gain = int((brightness / 100.0) * 120.0)
+        old_gain = self.camera.get_gain() or 0
         if self.camera.set_gain(gain):
             print(f"✅ 亮度已应用: {brightness}% (增益: {gain})")
+            # 日志：修改亮度/增益
+            self._write_camera_audit(
+                "modify_brightness",
+                old_value=str(old_gain),
+                new_value=str(gain),
+            )
         else:
             print(f"❌ 亮度应用失败")
         
@@ -390,6 +404,48 @@ class SensorSettingsFrame(tk.Frame):
         
         # 5. 显示成功提示
         self._show_success_message(trigger_mode)
+
+    def _write_camera_audit(self, action: str, old_value: str = "", new_value: str = ""):
+        """
+        日志字段规范：写入带相机标识的 camera_settings 日志。
+        target_object 格式：'CAM-B@192.168.10.22'
+        优先通过 main_window._audit 写入（保证面板实时刷新），
+        否则直接写库。
+        """
+        try:
+            # 构造 target_object：相机名@IP
+            from managers.camera_manager import CameraManager
+            cam = CameraManager().current_camera
+            if cam:
+                label = cam.name if cam.name else cam.ip
+                target = f"{label}@{cam.ip}"
+            else:
+                target = ""
+
+            # 优先通过主窗口写（保证日志面板实时刷新）
+            if self.controller and hasattr(self.controller, '_audit'):
+                self.controller._audit(
+                    "camera_settings", action,
+                    target_object=target,
+                    old_value=old_value,
+                    new_value=new_value,
+                )
+            else:
+                from managers.audit_log_manager import AuditLogManager
+                # 尝试从 controller 获取用户信息
+                username = getattr(self.controller, 'username', '') if self.controller else ''
+                role = getattr(self.controller, 'role', '') if self.controller else ''
+                AuditLogManager().log(
+                    user_name=username,
+                    user_role=role,
+                    operation_type="camera_settings",
+                    operation_action=action,
+                    target_object=target,
+                    old_value=old_value,
+                    new_value=new_value,
+                )
+        except Exception as e:
+            print(f"[SensorSettingsFrame] 写日志失败: {e}")
     
     def _apply_contrast_settings(self, contrast):
         """应用对比度设置"""

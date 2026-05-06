@@ -266,7 +266,12 @@ class CameraManager:
             )
 
         if on_result:
-            on_result(success, message)
+            # 将用户角色一并传给回调，供调用方区分失败处理策略
+            try:
+                on_result(success, message, user_role)
+            except TypeError:
+                # 兼容只接受两个参数的旧回调
+                on_result(success, message)
 
     def _connect(self, camera: CameraInfo) -> tuple[bool, str]:
         """
