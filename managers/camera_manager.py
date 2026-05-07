@@ -69,6 +69,10 @@ class CameraManager:
         # 扫描完成回调列表：fn(cameras: list)
         self._scan_callbacks: list = []
 
+        # Sapera 连接/断开回调
+        self._sapera_connector = None
+        self._sapera_disconnector = None
+
     # ------------------------------------------------------------------
     # 属性
     # ------------------------------------------------------------------
@@ -104,6 +108,18 @@ class CameraManager:
     def on_scan_complete(self, callback: Callable[[list], None]):
         """注册扫描完成回调。callback(camera_list)"""
         self._scan_callbacks.append(callback)
+
+    def set_sapera_connector(self, connect_fn, disconnect_fn):
+        """注册 Sapera 连接/断开回调"""
+        self._sapera_connector = connect_fn
+        self._sapera_disconnector = disconnect_fn
+
+    def set_initial_camera(self, camera):
+        """设置初始已连接的相机"""
+        if self._state == ConnectionState.DISCONNECTED and camera:
+            self._current = camera
+            self._last_successful = camera
+            self._notify_state(ConnectionState.CONNECTED, camera)
 
     def _notify_state(self, state: str, camera: Optional[CameraInfo]):
         self._state = state
@@ -298,10 +314,8 @@ class CameraManager:
                     else:
                         return False, f"对端无响应，可能不是相机：{camera.ip}:{camera.port}"
                 except _socket.timeout:
-                    # 超时无响应：不是相机服务
                     return False, f"握手超时，对端不是相机服务：{camera.ip}:{camera.port}"
                 except Exception:
-                    # 连接后立即断开：不是相机服务
                     return False, f"握手失败，对端不是相机服务：{camera.ip}:{camera.port}"
 
         except _socket.timeout:
@@ -311,12 +325,25 @@ class CameraManager:
         except Exception as e:
             return False, f"连接失败：{e}"
 
+        # 若有 Sapera 连接器，执行 Sapera 重连
+        if camera.server_name and self._sapera_connector:
+            try:
+                if not self._sapera_connector(camera.server_name):
+                    return False, f"Sapera连接失败：{camera.server_name}"
+            except Exception as e:
+                return False, f"Sapera连接异常：{e}"
+
     # ------------------------------------------------------------------
     # 断开连接
     # ------------------------------------------------------------------
 
     def disconnect(self):
-        """断开当前连接"""
+        """断开当前连接（包括 Sapera）"""
+        if self._sapera_disconnector:
+            try:
+                self._sapera_disconnector()
+            except Exception:
+                pass
         self._current = None
         self._notify_state(ConnectionState.DISCONNECTED, None)
 

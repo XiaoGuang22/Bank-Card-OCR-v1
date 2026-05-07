@@ -227,7 +227,10 @@ class CameraController:
         self.pixel_depth = 8  # 工业相机默认8位灰度
         self.pitch = 0        # 行间距
         # 触发模式状态（内存中保存）
-        self.current_trigger_mode = "internal"  # 默认为内部时钟模式
+        self.current_trigger_mode = "internal"
+        from config import SERVER_NAME as _CFG_SN
+        self._current_server_name = _CFG_SN
+        self._switch_lock = threading.Lock()
     
     @ErrorHandler.handle_camera_error
     def _stop_acquisition(self, silent=False):
@@ -294,22 +297,61 @@ class CameraController:
             return False
 
     @ErrorHandler.handle_camera_error
-    def connect(self):
+    def connect(self, server_name=None):
         """连接相机硬件"""
-        # 前置检查
-        if self.acq_device and self.acq_device.IsConnected:
-            return True
+        if server_name:
+            self._current_server_name = server_name
+        if self.acq_device is not None:
+            if server_name and server_name != getattr(self, '_last_connected_name', ''):
+                pass
+            else:
+                return True
         if not init_sapera_sdk():
             return False
-
-        # 执行连接操作
         return self._execute_camera_connection()
+
+    @ErrorHandler.handle_camera_error
+    def disconnect(self):
+        """断开相机连接"""
+        self._stop_acquisition(silent=True)
+        if self.xfer:
+            try: self.xfer.XferNotify -= self._on_frame_callback
+            except Exception: pass
+            safe_call(self.xfer.Destroy)
+            self.xfer = None
+        if self.buffers:
+            safe_call(self.buffers.Destroy)
+            self.buffers = None
+        if self.acq_device:
+            safe_call(self.acq_device.Destroy)
+            self.acq_device = None
+        self.location = None
+        self.is_running = False
+        with self.lock:
+            self.latest_frame = None
+
+    @ErrorHandler.handle_camera_error
+    def switch_to(self, server_name):
+        """切换到指定相机"""
+        with self._switch_lock:
+            if server_name == self._current_server_name and self.acq_device is not None:
+                return True
+            self.disconnect()
+            self._current_server_name = server_name
+            if self.connect(server_name):
+                self._last_connected_name = server_name
+                return True
+            return False
+
+    @property
+    def current_server_name(self):
+        return self._current_server_name
 
     @ErrorHandler.handle_camera_error
     def _execute_camera_connection(self):
         """执行相机连接操作"""
         # 1. 定位设备
-        self.location = SapLocation(SERVER_NAME, RESOURCE_INDEX)
+        self.location = SapLocation(self._current_server_name, RESOURCE_INDEX)
         
         # 2. 创建采集设备（修复分辨率获取）
         if not self._create_acq_device():
@@ -1407,6 +1449,7 @@ class InspectMainWindow:
         
         # 记录用户最后选择的方案（仅在本次程序运行期间有效）
         self.last_selected_solution = None
+        self._current_workspace_name = None
         
         # OCR 工作状态保存（仅在本次程序运行期间有效）
         self.saved_ocr_state = {
@@ -1465,9 +1508,109 @@ class InspectMainWindow:
         if hasattr(self, 'camera_status_bar') and self.camera_status_bar:
             self.root.after(500, self.camera_status_bar.trigger_initial_scan)
 
-        # 将主窗口实例挂到 root，供 CameraStatusBar 等子组件访问
+        # 注册 Sapera 连接器
+        self._register_sapera_connector()
+
         self.root._app_instance = self
-    
+
+    def _register_sapera_connector(self):
+        """桥接 CameraManager 与 CameraController"""
+        from managers.camera_manager import CameraManager
+        from camera.camera_discovery import CameraInfo, _find_camera_subnet_ip
+        mgr = CameraManager()
+
+        def _connect(server_name):
+            if not server_name: return False
+            if self.cam.current_server_name == server_name and self.cam.acq_device is not None:
+                return True
+            return self.cam.switch_to(server_name)
+
+        def _disconnect():
+            self.cam.disconnect()
+
+        mgr.set_sapera_connector(_connect, _disconnect)
+
+        # 同步当前相机状态
+        if self.cam.acq_device is not None:
+            ip = self._get_camera_ip_from_device()
+            if not ip:
+                ip = _find_camera_subnet_ip()
+            cam_info = CameraInfo(ip=ip or "0.0.0.0", port=5024, name="",
+                                  server_name=self.cam.current_server_name)
+            mgr.set_initial_camera(cam_info)
+
+        def _on_first_scan(cameras):
+            sn = self.cam.current_server_name
+            if sn:
+                for cam in cameras:
+                    if cam.server_name == sn:
+                        mgr.set_initial_camera(cam)
+                        break
+            if not cameras and mgr.current_camera:
+                for cb in getattr(mgr, '_scan_callbacks', []):
+                    if cb is not _on_first_scan:
+                        try: cb([mgr.current_camera])
+                        except Exception: pass
+            try: mgr._scan_callbacks.remove(_on_first_scan)
+            except ValueError: pass
+        mgr.on_scan_complete(_on_first_scan)
+
+    def _get_camera_ip_from_device(self):
+        """从 Sapera 设备获取相机 IP"""
+        try:
+            dev = self.cam.acq_device
+            if not dev: return ""
+            for feat in ["GevDeviceIPAddress","GevCurrentIPAddress","DeviceIPAddress"]:
+                try:
+                    if not dev.IsFeatureAvailable(feat): continue
+                    from clr import StrongBox
+                    from System import String
+                    ref = StrongBox[String]()
+                    if dev.GetFeatureValue(feat, ref) and ref.Value:
+                        ip = str(ref.Value).strip()
+                        if ip and ip != "0.0.0.0": return ip
+                except Exception: pass
+                try:
+                    import clr
+                    from System import String
+                    ref = clr.Reference[String]()
+                    if dev.GetFeatureValue(feat, ref) and ref.Value:
+                        ip = str(ref.Value).strip()
+                        if ip and ip != "0.0.0.0": return ip
+                except Exception: pass
+        except Exception: pass
+        return self._get_ip_from_arp()
+
+    def _get_ip_from_arp(self):
+        """通过 ARP 表获取相机 IP（相机通电就一定有，不依赖端口/协议/SDK）"""
+        try:
+            import subprocess, ipaddress
+            from camera.camera_discovery import _find_camera_subnet_ip
+            subnet = _find_camera_subnet_ip()
+            if not subnet:
+                return ""
+            nic_ip = subnet.rsplit(".", 1)[0] + ".1"
+            for attempt in range(2):
+                if attempt == 1:
+                    # fallback: try .12 (known camera NIC)
+                    nic_ip = subnet.rsplit(".", 1)[0] + ".12"
+                try:
+                    r = subprocess.run(["arp", "-a", "-N", nic_ip],
+                                       capture_output=True, text=True, timeout=3)
+                    for line in r.stdout.split("\n"):
+                        if "动态" in line or "dynamic" in line.lower():
+                            parts = line.split()
+                            for p in parts:
+                                p = p.strip()
+                                if p.count(".") == 3:
+                                    try: ipaddress.IPv4Address(p); return p
+                                    except Exception: pass
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return ""
+
     def _on_window_configure(self, event):
         """
         窗口配置改变事件处理（包括最大化/还原）
