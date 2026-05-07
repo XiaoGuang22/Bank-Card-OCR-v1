@@ -1403,7 +1403,9 @@ class InspectMainWindow:
         self.style.configure("White.TLabelframe", background="white")
         self.style.configure("White.TLabelframe.Label", background="white", font=("Microsoft YaHei UI", 9))
         
-        # 初始化相机
+        # 初始化相机（先枚举 Sapera 服务器，再连接）
+        init_sapera_sdk()
+        self._enumerate_sapera_servers_before_connect()
         self.cam = CameraController()
         self.cam.connect()
         
@@ -1449,6 +1451,7 @@ class InspectMainWindow:
         
         # 记录用户最后选择的方案（仅在本次程序运行期间有效）
         self.last_selected_solution = None
+        self._current_workspace_name = None
         self._current_workspace_name = None
         
         # OCR 工作状态保存（仅在本次程序运行期间有效）
@@ -1513,6 +1516,27 @@ class InspectMainWindow:
 
         self.root._app_instance = self
 
+    def _enumerate_sapera_servers_before_connect(self):
+        """在连接相机前枚举所有 Sapera 服务器，缓存相机名称"""
+        self._sapera_server_names = {}  # {server_name: display_name}
+        if not SAPERA_AVAILABLE:
+            return
+        try:
+            from DALSA.SaperaLT.SapClassBasic import SapManager
+            count = SapManager.GetServerCount()
+            print(f"[Sapera] Found {count} server(s)")
+            for i in range(count):
+                try:
+                    sn = SapManager.GetServerName(i)
+                    if not sn or sn.startswith("System_"):
+                        continue
+                    print(f"[Sapera] Server {i}: {sn}")
+                    self._sapera_server_names[sn] = sn
+                except Exception as e:
+                    print(f"[Sapera] Server {i} error: {e}")
+        except Exception as e:
+            print(f"[Sapera] Enumeration error: {e}")
+
     def _register_sapera_connector(self):
         """桥接 CameraManager 与 CameraController"""
         from managers.camera_manager import CameraManager
@@ -1535,7 +1559,15 @@ class InspectMainWindow:
             ip = self._get_camera_ip_from_device()
             if not ip:
                 ip = _find_camera_subnet_ip()
-            cam_info = CameraInfo(ip=ip or "0.0.0.0", port=5024, name="",
+            name = self._get_camera_name_from_device()
+            if not name:
+                try:
+                    from config import CAMERA_DISPLAY_NAMES
+                    sn = self.cam.current_server_name
+                    name = CAMERA_DISPLAY_NAMES.get(sn, sn)
+                except Exception:
+                    name = self.cam.current_server_name
+            cam_info = CameraInfo(ip=ip or "0.0.0.0", port=5024, name=name,
                                   server_name=self.cam.current_server_name)
             mgr.set_initial_camera(cam_info)
 
@@ -1580,6 +1612,48 @@ class InspectMainWindow:
                 except Exception: pass
         except Exception: pass
         return self._get_ip_from_arp()
+
+    def _get_camera_name_from_device(self):
+        """从 Sapera 设备获取相机名称（DeviceUserID，如 S1024035 或 Genie M1600）"""
+        try:
+            dev = self.cam.acq_device
+            if not dev:
+                return ""
+            feats = ["DeviceUserID", "DeviceModelName", "DeviceVendorName", "DeviceID"]
+            for feat in feats:
+                try:
+                    if not dev.IsFeatureAvailable(feat):
+                        continue
+                    # StrongBox<String>
+                    try:
+                        from clr import StrongBox
+                        from System import String
+                        ref = StrongBox[String]()
+                        if dev.GetFeatureValue(feat, ref) and ref.Value:
+                            name = str(ref.Value).strip()
+                            # 验证：排除明显不是名称的值（布尔、大数字等）
+                            if name and name not in ("True", "False") and not name.startswith("("):
+                                print(f"[Camera] Name via StrongBox {feat}: {name}")
+                                return name
+                    except Exception:
+                        pass
+                    # Reference<String>
+                    try:
+                        import clr
+                        from System import String
+                        ref = clr.Reference[String]()
+                        if dev.GetFeatureValue(feat, ref) and ref.Value:
+                            name = str(ref.Value).strip()
+                            if name and name not in ("True", "False") and not name.startswith("("):
+                                print(f"[Camera] Name via Reference {feat}: {name}")
+                                return name
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return ""
 
     def _get_ip_from_arp(self):
         """通过 ARP 表获取相机 IP（相机通电就一定有，不依赖端口/协议/SDK）"""

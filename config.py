@@ -17,6 +17,12 @@ SAPERA_DLL_PATH = r"C:\Program Files\Teledyne DALSA\Sapera\Components\NET\Bin\DA
 # 注意：需要在 Sapera CamExpert 中查看实际的服务器名称
 SERVER_NAME = "Genie_M1600_1"  # 或者 "Genie_M1600_1"，需要确认
 
+# 相机显示名称映射 {Sapera服务器名: 显示名称}
+# 多相机时每台相机各配一条，如 "Genie_M1600_2": "S1024036"
+CAMERA_DISPLAY_NAMES = {
+    "Genie_M1600_1": "S1024035",
+}
+
 # 资源索引（通常第一个相机为 0）
 RESOURCE_INDEX = 0
 

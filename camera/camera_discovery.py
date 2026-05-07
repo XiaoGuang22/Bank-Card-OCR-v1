@@ -31,6 +31,7 @@ class CameraInfo:
     serial: str = ""        # 序列号
     model: str = ""         # 型号
     server_name: str = ""   # Sapera服务器名
+    server_name: str = ""   # Sapera服务器名
 
     @property
     def display_name(self) -> str:
@@ -158,8 +159,13 @@ def _find_camera_subnet_ip() -> str:
         default_subnet = s.getsockname()[0].rsplit(".", 1)[0] + "."
         s.close()
     except Exception: pass
+    # 排除虚拟网卡常见网段 (VMware: 192.168.192.x, 192.168.40.x 等)
+    VIRTUAL_PREFIXES = ("192.168.192.", "192.168.40.", "192.168.56.", "192.168.75.")
     for ip in ips:
-        if not ip.startswith(default_subnet):
+        if not ip.startswith(default_subnet) and not any(ip.startswith(v) for v in VIRTUAL_PREFIXES):
+            return ip.rsplit(".", 1)[0] + ".0"
+    for ip in ips:
+        if not any(ip.startswith(v) for v in VIRTUAL_PREFIXES):
             return ip.rsplit(".", 1)[0] + ".0"
     if ips:
         return ips[0].rsplit(".", 1)[0] + ".0"
