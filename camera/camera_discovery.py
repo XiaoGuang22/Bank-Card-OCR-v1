@@ -30,6 +30,7 @@ class CameraInfo:
     name: str = ""          # 相机自定义名称（从设备读取，读不到则留空）
     serial: str = ""        # 序列号
     model: str = ""         # 型号
+    server_name: str = ""   # Sapera服务器名
 
     @property
     def display_name(self) -> str:
@@ -137,6 +138,32 @@ def _probe_camera(ip: str, port: int, timeout_ms: int) -> Optional[CameraInfo]:
             return CameraInfo(ip=ip, port=port, name=name)
     except Exception:
         return None
+
+
+def _find_camera_subnet_ip() -> str:
+    """在所有本地私有网卡中找到相机所在网段的基准IP（排除上网网卡）"""
+    import socket as _sk
+    ips = []
+    try:
+        for addr in _sk.getaddrinfo(_sk.gethostname(), None, _sk.AF_INET):
+            ip = addr[4][0]
+            if ip.startswith("127."): continue
+            if any(ip.startswith(p) for p in ("192.168.", "10.", "172.")):
+                ips.append(ip)
+    except Exception: pass
+    default_subnet = ""
+    try:
+        s = _sk.socket(_sk.AF_INET, _sk.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        default_subnet = s.getsockname()[0].rsplit(".", 1)[0] + "."
+        s.close()
+    except Exception: pass
+    for ip in ips:
+        if not ip.startswith(default_subnet):
+            return ip.rsplit(".", 1)[0] + ".0"
+    if ips:
+        return ips[0].rsplit(".", 1)[0] + ".0"
+    return ""
 
 
 class CameraDiscovery:

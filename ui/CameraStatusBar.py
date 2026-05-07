@@ -320,9 +320,12 @@ class CameraStatusBar(tk.Frame):
         if state == CS.CONNECTED and camera:
             self._set_led(self._COLOR_CONNECTED)
             self._info_var.set(f"当前相机：{camera.display_name}")
-            # 同步下拉框选中项
-            if camera.display_name in self._combo["values"]:
-                self._combo_var.set(camera.display_name)
+            # 确保相机在下拉框（扫描原因导致列表空时也能显示）
+            vals = list(self._combo["values"])
+            if "无可用相机" in vals: vals.remove("无可用相机")
+            if camera.display_name not in vals: vals.append(camera.display_name)
+            self._combo["values"] = vals
+            self._combo_var.set(camera.display_name)
 
         elif state == CS.CONNECTING:
             self._start_blink()
@@ -337,23 +340,18 @@ class CameraStatusBar(tk.Frame):
             self._info_var.set("未连接")
 
     def _update_camera_list(self, cameras: list):
-        """扫描完成后更新下拉框"""
-        self._camera_list = cameras
-
-        if cameras:
-            names = [c.display_name for c in cameras]
+        """扫描完成后更新下拉框（扫描原因导致列表空时自动补入当前相机）"""
+        self._camera_list = list(cameras) if cameras else []
+        current = self._manager.current_camera
+        if current and current not in self._camera_list:
+            self._camera_list.append(current)
+        if self._camera_list:
+            names = [c.display_name for c in self._camera_list]
             self._combo["values"] = names
-            # 如果当前连接的相机在列表中，保持选中；否则选第一个
-            current = self._manager.current_camera
-            if current and current.display_name in names:
-                self._combo_var.set(current.display_name)
-            else:
-                self._combo_var.set(names[0])
+            self._combo_var.set(current.display_name if current and current.display_name in names else names[0])
         else:
             self._combo["values"] = ["无可用相机"]
             self._combo_var.set("无可用相机")
-
-        # 恢复状态灯（扫描完成后回到连接状态）
         self._refresh_display(self._manager.state, self._manager.current_camera)
 
     # ------------------------------------------------------------------
