@@ -73,6 +73,10 @@ class CameraManager:
         self._sapera_connector = None
         self._sapera_disconnector = None
 
+        # Sapera 连接/断开回调
+        self._sapera_connector = None
+        self._sapera_disconnector = None
+
     # ------------------------------------------------------------------
     # 属性
     # ------------------------------------------------------------------
@@ -108,6 +112,18 @@ class CameraManager:
     def on_scan_complete(self, callback: Callable[[list], None]):
         """注册扫描完成回调。callback(camera_list)"""
         self._scan_callbacks.append(callback)
+
+    def set_sapera_connector(self, connect_fn, disconnect_fn):
+        """注册 Sapera 连接/断开回调"""
+        self._sapera_connector = connect_fn
+        self._sapera_disconnector = disconnect_fn
+
+    def set_initial_camera(self, camera):
+        """设置初始已连接的相机"""
+        if self._state == ConnectionState.DISCONNECTED and camera:
+            self._current = camera
+            self._last_successful = camera
+            self._notify_state(ConnectionState.CONNECTED, camera)
 
     def set_sapera_connector(self, connect_fn, disconnect_fn):
         """注册 Sapera 连接/断开回调"""
