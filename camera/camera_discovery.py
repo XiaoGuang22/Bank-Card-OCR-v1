@@ -116,7 +116,8 @@ def _get_local_network_ranges() -> List[str]:
 def _probe_camera(ip: str, port: int, timeout_ms: int) -> Optional[CameraInfo]:
     """
     尝试 TCP 连接目标 IP:port，成功则返回 CameraInfo，失败返回 None。
-    连接成功后尝试发送简单的厂商发现指令读取相机名称。
+    连接成功后发送 IDENTIFY 指令，必须有合法响应才认为是相机。
+    ★★★ 修复：仅 TCP 连接成功不足以判定为相机，必须有响应 ★★★
     """
     timeout_s = timeout_ms / 1000.0
     try:
@@ -124,17 +125,25 @@ def _probe_camera(ip: str, port: int, timeout_ms: int) -> Optional[CameraInfo]:
             s.settimeout(timeout_s)
             s.connect((ip, port))
 
-            # 尝试读取相机标识（发送简单握手，读取响应）
+            # ★★★ 修复：必须有 IDENTIFY 响应才认为是相机 ★★★
+            # 仅 TCP 连接成功（如 Web 服务、任意开放端口）不能算作相机
             name = ""
             try:
-                s.settimeout(0.1)
-                # 发送一个简单的查询指令（厂商自定义协议，读不到也没关系）
+                s.settimeout(0.5)  # 等待响应时间加长到 500ms
+                # 发送查询指令
                 s.sendall(b"IDENTIFY\r\n")
                 resp = s.recv(256).decode("utf-8", errors="ignore").strip()
                 if resp:
                     name = resp.split("\n")[0][:32]  # 取第一行，最多32字符
+                else:
+                    # ★★★ 修复：有连接但无响应，不是相机 ★★★
+                    return None
+            except socket.timeout:
+                # ★★★ 修复：有连接但超时无响应，不是相机 ★★★
+                return None
             except Exception:
-                pass
+                # ★★★ 修复：通信异常，不是相机 ★★★
+                return None
 
             return CameraInfo(ip=ip, port=port, name=name)
     except Exception:
