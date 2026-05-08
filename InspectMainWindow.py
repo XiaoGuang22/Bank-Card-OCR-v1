@@ -377,6 +377,7 @@ class CameraController:
         self.acq_device = SapAcqDevice(self.location, False)
         
         if not sapera_create_check(self.acq_device, self.acq_device.Create, "采集设备"):
+            self.acq_device = None  # ★★★ 修复：创建失败必须清空引用，避免后续误判为已连接 ★★★
             return False
         
         # 获取相机分辨率（兼容多种方式）
@@ -1540,12 +1541,12 @@ class InspectMainWindow:
     def _register_sapera_connector(self):
         """桥接 CameraManager 与 CameraController"""
         from managers.camera_manager import CameraManager
-        from camera.camera_discovery import CameraInfo, _find_camera_subnet_ip
+        from camera.camera_discovery import CameraInfo
         mgr = CameraManager()
 
         def _connect(server_name):
             if not server_name: return False
-            if self.cam.current_server_name == server_name and self.cam.acq_device is not None:
+            if self.cam.current_server_name == server_name and self.cam.is_running:
                 return True
             return self.cam.switch_to(server_name)
 
@@ -1554,11 +1555,13 @@ class InspectMainWindow:
 
         mgr.set_sapera_connector(_connect, _disconnect)
 
-        # 同步当前相机状态
-        if self.cam.acq_device is not None:
+        # ★★★ 修复：必须同时检查 acq_device 存在且 is_running 为 True，
+        # 才认为是真正的相机连接成功，避免创建失败的设备对象被误判 ★★★
+        if self.cam.acq_device is not None and self.cam.is_running:
             ip = self._get_camera_ip_from_device()
-            if not ip:
-                ip = _find_camera_subnet_ip()
+            # ★★★ 修复：从设备获取不到 IP 时，不启用兜底IP（子网猜测/ARP随机条目），
+            # 因为兜底IP大概率不是真正的相机 ★★★
+            # 改用 Sapera 服务器名作为标识，等扫描发现提供真实IP
             name = self._get_camera_name_from_device()
             if not name:
                 try:
@@ -1567,8 +1570,13 @@ class InspectMainWindow:
                     name = CAMERA_DISPLAY_NAMES.get(sn, sn)
                 except Exception:
                     name = self.cam.current_server_name
-            cam_info = CameraInfo(ip=ip or "0.0.0.0", port=5024, name=name,
-                                  server_name=self.cam.current_server_name)
+            # 如果获取不到IP，用服务器名占位，但标记为已连接
+            cam_info = CameraInfo(
+                ip=ip or self.cam.current_server_name,
+                port=5024,
+                name=name or self.cam.current_server_name,
+                server_name=self.cam.current_server_name,
+            )
             mgr.set_initial_camera(cam_info)
 
         def _on_first_scan(cameras):
@@ -1611,7 +1619,10 @@ class InspectMainWindow:
                         if ip and ip != "0.0.0.0": return ip
                 except Exception: pass
         except Exception: pass
-        return self._get_ip_from_arp()
+        # ★★★ 修复：不再自动回退到 ARP 表获取兜底IP。
+        # ARP 表中的第一个动态条目可能是路由器或其他设备，不是相机。
+        # 如果设备无法提供 IP，说明连接有问题，返回空让上层处理。 ★★★
+        return ""
 
     def _get_camera_name_from_device(self):
         """从 Sapera 设备获取相机名称（DeviceUserID，如 S1024035 或 Genie M1600）"""
