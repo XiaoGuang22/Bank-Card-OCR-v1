@@ -163,6 +163,7 @@ def init_sapera_sdk():
         SapAcqDeviceToBuf as _SapAcqDeviceToBuf, 
         SapXferPair as _SapXferPair, 
         SapTransfer as _SapTransfer,
+        SapManager as _SapManager,
     )
     SapLocation = _SapLocation
     SapAcqDevice = _SapAcqDevice
@@ -173,6 +174,59 @@ def init_sapera_sdk():
     SapTransfer = _SapTransfer
     
     SAPERA_AVAILABLE = True
+    
+    # ★★★ 主线程预缓存 Sapera 相机列表（使用已加载的类型）★★★
+    try:
+        SapManager = _SapManager  # 使用已导入的类型
+        from camera.camera_discovery import CameraInfo, set_sapera_cache, _parse_sapera_ip, _parse_sapera_feature_value, DEFAULT_CAMERA_PORT as _DEFAULT_PORT
+        cameras = []
+        server_count = SapManager.GetServerCount()
+        print(f"[Init] Sapera 服务器数量: {server_count}")
+        for i in range(server_count):
+            server_name = SapManager.GetServerName(i)
+            print(f"[Init]   服务器[{i}]: {server_name}")
+            if server_name.startswith("System_"):
+                continue
+            try:
+                loc = SapLocation(server_name, 0)
+                dev = SapAcqDevice(loc, False)
+                if not dev.Create():
+                    print(f"[Init]   {server_name}: Create() 返回 False")
+                    try: dev.Destroy()
+                    except: pass
+                    continue
+                ip = ""
+                try:
+                    if dev.IsFeatureAvailable("GevCurrentIPAddress"):
+                        ip = _parse_sapera_ip(dev.GetFeatureValue("GevCurrentIPAddress"))
+                except: pass
+                model = ""
+                try:
+                    if dev.IsFeatureAvailable("DeviceModelName"):
+                        model = _parse_sapera_feature_value(dev.GetFeatureValue("DeviceModelName"))
+                except: pass
+                serial = ""
+                try:
+                    if dev.IsFeatureAvailable("DeviceSerialNumber"):
+                        serial = _parse_sapera_feature_value(dev.GetFeatureValue("DeviceSerialNumber"))
+                except: pass
+                dev.Destroy()
+                print(f"[Init]   ✅ 发现: {server_name} @ {ip}")
+                cameras.append(CameraInfo(
+                    ip=ip if ip else server_name,
+                    port=_DEFAULT_PORT,
+                    name=server_name,
+                    serial=serial,
+                    model=model,
+                    server_name=server_name,
+                    source="sapera",
+                ))
+            except Exception as ex:
+                print(f"[Init]   {server_name}: 枚举失败 - {ex}")
+        set_sapera_cache(cameras)
+    except Exception as e:
+        print(f"[Init] Sapera缓存初始化失败: {e}")
+    
     return True
 
 # 通用工具函数
@@ -228,6 +282,9 @@ class CameraController:
         self.pitch = 0        # 行间距
         # 触发模式状态（内存中保存）
         self.current_trigger_mode = "internal"  # 默认为内部时钟模式
+        
+        # 当前连接的相机服务器名称（支持动态切换）
+        self._current_server_name = SERVER_NAME
     
     @ErrorHandler.handle_camera_error
     def _stop_acquisition(self, silent=False):
@@ -294,8 +351,15 @@ class CameraController:
             return False
 
     @ErrorHandler.handle_camera_error
-    def connect(self):
-        """连接相机硬件"""
+    def connect(self, server_name: str = None):
+        """连接相机硬件
+        
+        Args:
+            server_name: Sapera 服务器名称，默认使用已配置的 SERVER_NAME
+        """
+        if server_name:
+            self._current_server_name = server_name
+        
         # 前置检查
         if self.acq_device and self.acq_device.IsConnected:
             return True
@@ -306,10 +370,69 @@ class CameraController:
         return self._execute_camera_connection()
 
     @ErrorHandler.handle_camera_error
+    def disconnect(self):
+        """断开当前相机连接，释放所有 Sapera 资源"""
+        # 停止采集
+        if self.xfer and self.is_running:
+            try:
+                self.xfer.Freeze()
+                self.xfer.Wait(3000)
+            except Exception:
+                pass
+            self.is_running = False
+        
+        # 清理传输对象回调
+        if self.xfer:
+            try:
+                self.xfer.XferNotify -= self._on_frame_callback
+            except Exception:
+                pass
+        
+        # 清理所有资源
+        self._cleanup_partial_connection()
+        
+        # 清空帧缓存
+        with self.lock:
+            self.latest_frame = None
+        
+        print(f"[CameraController] 已断开相机连接")
+
+    @ErrorHandler.handle_camera_error
+    def switch_to(self, server_name: str) -> bool:
+        """
+        切换到指定的相机（动态切换）
+        
+        Args:
+            server_name: 目标相机的 Sapera 服务器名称
+        
+        Returns:
+            bool: 切换是否成功
+        """
+        if self._current_server_name == server_name and self.acq_device and self.acq_device.IsConnected:
+            print(f"[CameraController] 已是目标相机 {server_name}，无需切换")
+            return True
+        
+        print(f"[CameraController] 正在切换相机: {self._current_server_name} → {server_name}")
+        
+        # 断开当前连接
+        self.disconnect()
+        
+        # 更新目标服务器名并重连
+        self._current_server_name = server_name
+        success = self.connect(server_name=server_name)
+        
+        if success:
+            print(f"[CameraController] 成功切换到 {server_name}")
+        else:
+            print(f"[CameraController] 切换到 {server_name} 失败")
+        
+        return success
+
+    @ErrorHandler.handle_camera_error
     def _execute_camera_connection(self):
         """执行相机连接操作"""
-        # 1. 定位设备
-        self.location = SapLocation(SERVER_NAME, RESOURCE_INDEX)
+        # 1. 定位设备（使用当前服务器名称）
+        self.location = SapLocation(self._current_server_name, RESOURCE_INDEX)
         
         # 2. 创建采集设备（修复分辨率获取）
         if not self._create_acq_device():
@@ -1467,6 +1590,22 @@ class InspectMainWindow:
 
         # 将主窗口实例挂到 root，供 CameraStatusBar 等子组件访问
         self.root._app_instance = self
+
+    def _on_hardware_switch(self, server_name: str) -> bool:
+        """
+        硬件驱动桥接回调：由 CameraManager 调用，执行实际的 Sapera 相机切换。
+        
+        Args:
+            server_name: Sapera 服务器名称
+        
+        Returns:
+            bool: 切换是否成功
+        """
+        try:
+            return self.cam.switch_to(server_name)
+        except Exception as e:
+            print(f"[InspectMainWindow] 硬件切换失败: {e}")
+            return False
     
     def _on_window_configure(self, event):
         """
@@ -1608,6 +1747,11 @@ class InspectMainWindow:
                 bg="#808080",
             )
             self.camera_status_bar.pack(side=tk.LEFT, fill=tk.Y)
+            
+            # ★★★ 注册硬件驱动桥接：CameraManager → CameraController ★★★
+            from managers.camera_manager import CameraManager
+            CameraManager().set_hardware_driver(self._on_hardware_switch)
+            
         except Exception as _e:
             print(f"[CameraStatusBar] 加载失败: {_e}")
             self.camera_status_bar = None

@@ -13,12 +13,28 @@ import os
 # Sapera SDK DLL 路径
 SAPERA_DLL_PATH = r"C:\Program Files\Teledyne DALSA\Sapera\Components\NET\Bin\DALSA.SaperaLT.SapClassBasic.dll"
 
-# 相机服务器名称（必须与 Sapera CamExpert 中显示的名称一致）
+# 默认相机服务器名称（必须与 Sapera CamExpert 中显示的名称一致）
 # 注意：需要在 Sapera CamExpert 中查看实际的服务器名称
-SERVER_NAME = "Genie_M1600_1"  # 或者 "Genie_M1600_1"，需要确认
+SERVER_NAME = "Genie_M1600_1"  # 默认相机
 
 # 资源索引（通常第一个相机为 0）
 RESOURCE_INDEX = 0
+
+# ★★★ 多相机配置列表 ★★★
+# 每台相机在 Sapera CamExpert 中配置一个唯一的服务器名称
+# 格式: { "server_name": "Sapera中的名称", "display_name": "自定义显示名", "expected_ip": "预期IP（可选）" }
+CAMERA_LIST = [
+    {
+        "server_name": "Genie_M1600_1",
+        "display_name": "相机A",
+        "expected_ip": "192.168.11.110",
+    },
+    {
+        "server_name": "Genie_M1600_2",
+        "display_name": "相机B",
+        "expected_ip": "192.168.11.136",
+    },
+]
 
 # 相机默认参数（程序关闭时恢复为这些值）
 CAMERA_DEFAULT_PARAMS = {

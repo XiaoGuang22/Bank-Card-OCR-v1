@@ -69,6 +69,10 @@ class CameraManager:
         # 扫描完成回调列表：fn(cameras: list)
         self._scan_callbacks: list = []
 
+        # 硬件驱动回调：fn(server_name: str) -> bool
+        # 由 InspectMainWindow 注册，用于实际的 Sapera 相机切换
+        self._hardware_driver_callback: Optional[Callable[[str], bool]] = None
+
     # ------------------------------------------------------------------
     # 属性
     # ------------------------------------------------------------------
@@ -104,6 +108,15 @@ class CameraManager:
     def on_scan_complete(self, callback: Callable[[list], None]):
         """注册扫描完成回调。callback(camera_list)"""
         self._scan_callbacks.append(callback)
+
+    def set_hardware_driver(self, callback: Callable[[str], bool]):
+        """
+        注册硬件驱动回调，用于实际的相机硬件切换（如 Sapera SDK）。
+        
+        Args:
+            callback: fn(server_name: str) -> bool，返回切换是否成功
+        """
+        self._hardware_driver_callback = callback
 
     def _notify_state(self, state: str, camera: Optional[CameraInfo]):
         self._state = state
@@ -274,6 +287,34 @@ class CameraManager:
                 on_result(success, message)
 
     def _connect(self, camera: CameraInfo) -> tuple[bool, str]:
+        """
+        连接目标相机。
+        
+        - Sapera 相机（source="sapera"）：通过硬件驱动回调切换
+        - TCP 相机（source="tcp"）：TCP 连通性探测 + IDENTIFY 握手
+        """
+        # Sapera 相机：通过硬件驱动切换
+        if camera.source == "sapera" and camera.server_name:
+            return self._connect_sapera(camera)
+
+        # TCP 相机：原有逻辑
+        return self._connect_tcp(camera)
+
+    def _connect_sapera(self, camera: CameraInfo) -> tuple[bool, str]:
+        """通过 Sapera 硬件驱动连接相机"""
+        if not self._hardware_driver_callback:
+            return False, "硬件驱动未注册，无法连接 Sapera 相机"
+        
+        try:
+            success = self._hardware_driver_callback(camera.server_name)
+            if success:
+                return True, "连接成功"
+            else:
+                return False, f"Sapera 相机连接失败: {camera.server_name}"
+        except Exception as e:
+            return False, f"Sapera 相机连接异常: {e}"
+
+    def _connect_tcp(self, camera: CameraInfo) -> tuple[bool, str]:
         """
         验证目标 IP:port 是否为可用相机。
         先做 TCP 连通性探测，再发送 IDENTIFY 握手确认对端是相机服务。
