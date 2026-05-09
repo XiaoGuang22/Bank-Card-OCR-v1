@@ -527,26 +527,42 @@ class CameraController:
             return
 
         import tempfile
-        # 创建临时文件
-        with tempfile.NamedTemporaryFile(suffix='.bmp', delete=False) as temp_file:
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        temp_dir = os.path.join(project_dir, "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+
+        # 创建临时文件，存放到项目 temp 目录，避免用户目录中文路径问题
+        with tempfile.NamedTemporaryFile(suffix='.bmp', prefix='sapera_', dir=temp_dir, delete=False) as temp_file:
             temp_path = temp_file.name
-        
-        # 使用 Sapera 的 Save 方法
-        if self.buffers.Save(temp_path, "-format bmp"):
-            # 读取图像
-            img_np = cv2.imread(temp_path, cv2.IMREAD_GRAYSCALE)
-            
-            # 删除临时文件
-            safe_call(os.unlink, temp_path)
-            
-            if img_np is not None:
-                # 线程安全更新最新帧
-                with self.lock:
-                    self.latest_frame = img_np.copy()
-                
-                # 如果正在等待触发帧，设置事件通知
-                if self.waiting_for_trigger:
-                    self.frame_updated_event.set()
+
+        try:
+            # 使用 Sapera 的 Save 方法
+            if self.buffers.Save(temp_path, "-format bmp"):
+                # 读取图像：先用 fromfile 读取文件二进制，再 decode
+                img_np = None
+                try:
+                    file_data = np.fromfile(temp_path, dtype=np.uint8)
+                    if file_data.size > 0:
+                        img_np = cv2.imdecode(file_data, cv2.IMREAD_GRAYSCALE)
+                except Exception:
+                    img_np = None
+
+                # 如果 fromfile / imdecode 失败，再尝试兼容方式读取
+                if img_np is None:
+                    img_np = cv2.imread(temp_path, cv2.IMREAD_GRAYSCALE)
+
+                if img_np is not None:
+                    # 线程安全更新最新帧
+                    with self.lock:
+                        self.latest_frame = img_np.copy()
+
+                    # 如果正在等待触发帧，设置事件通知
+                    if self.waiting_for_trigger:
+                        self.frame_updated_event.set()
+        finally:
+            if temp_path:
+                safe_call(os.unlink, temp_path)
+                temp_path = None
 
     def get_image(self):
         """获取最新图像（优先返回有效帧）"""
