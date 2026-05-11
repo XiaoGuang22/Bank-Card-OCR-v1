@@ -31,7 +31,6 @@ class CameraInfo:
     serial: str = ""        # 序列号
     model: str = ""         # 型号
     server_name: str = ""   # Sapera服务器名
-    server_name: str = ""   # Sapera服务器名
 
     @property
     def display_name(self) -> str:

@@ -1539,10 +1539,10 @@ class InspectMainWindow:
             print(f"[Sapera] Enumeration error: {e}")
 
     def _register_sapera_connector(self):
-        """桥接 CameraManager 与 CameraController"""
-        from managers.camera_manager import CameraManager
+        """桥接 EnhancedCameraManager 与 CameraController"""
+        from managers.camera_manager import EnhancedCameraManager
         from camera.camera_discovery import CameraInfo
-        mgr = CameraManager()
+        mgr = EnhancedCameraManager()
 
         def _connect(server_name):
             if not server_name: return False
@@ -1579,11 +1579,19 @@ class InspectMainWindow:
             )
             mgr.set_initial_camera(cam_info)
 
-        def _on_first_scan(cameras):
+        def _on_first_scan(sapera_cameras, network_cameras=None):
+            # 兼容新的回调格式，合并两种类型的相机
+            if network_cameras is None:
+                # 旧格式：只有一个参数
+                cameras = sapera_cameras
+            else:
+                # 新格式：两个参数
+                cameras = list(sapera_cameras) + list(network_cameras)
+            
             sn = self.cam.current_server_name
             if sn:
                 for cam in cameras:
-                    if cam.server_name == sn:
+                    if getattr(cam, 'server_name', '') == sn:
                         mgr.set_initial_camera(cam)
                         break
             if not cameras and mgr.current_camera:
@@ -2542,8 +2550,8 @@ class InspectMainWindow:
         若无相机连接则只返回 suffix。
         """
         try:
-            from managers.camera_manager import CameraManager
-            cam = CameraManager().current_camera
+            from managers.camera_manager import EnhancedCameraManager
+            cam = EnhancedCameraManager().current_camera
             if cam:
                 label = cam.name if cam.name else cam.ip
                 cam_str = f"{label}@{cam.ip}"
