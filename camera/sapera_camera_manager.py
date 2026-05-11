@@ -25,6 +25,7 @@ try:
         SapLocation,
         SapAcqDevice,
         SapBuffer,
+        SapBufferWithTrash,
         SapTransfer,
         SapAcqDeviceToBuf
     )
@@ -221,12 +222,26 @@ class SaperaCameraManager:
     def _create_buffers_and_transfer(self) -> tuple[bool, str]:
         """创建缓冲区和传输对象"""
         try:
-            # 创建缓冲区
-            self._buffers = SapBuffer(2, self._acq_device)  # 双缓冲
-            if not self._buffers.Create():
-                return False, "无法创建缓冲区"
+            # 创建缓冲区 - 使用 SapBufferWithTrash 并尝试不同的内存类型
+            buffer_types = [
+                SapBuffer.MemoryType.ScatterGather,
+                SapBuffer.MemoryType.ScatterGatherPhysical
+            ]
             
-            print(f"[SaperaCameraManager] 成功创建缓冲区")
+            buffer_created = False
+            for mem_type in buffer_types:
+                try:
+                    self._buffers = SapBufferWithTrash(2, self._acq_device, mem_type)
+                    if self._buffers.Create():
+                        print(f"[SaperaCameraManager] 成功创建缓冲区 ({mem_type})")
+                        buffer_created = True
+                        break
+                except Exception as e:
+                    print(f"[SaperaCameraManager] 创建缓冲区失败 ({mem_type}): {e}")
+                    continue
+            
+            if not buffer_created:
+                return False, "无法创建缓冲区"
             
             # 创建传输对象
             self._transfer = SapAcqDeviceToBuf(self._acq_device, self._buffers)
@@ -321,6 +336,9 @@ class SaperaCameraManager:
         切换到目标相机
         
         实现需求文档 FC-09/FC-10 的完整切换流程
+        
+        ★★★ 注意：不直接操作 Sapera 对象，而是调用主程序的 CameraController ★★★
+        因为主程序已经创建了 Sapera 对象，重复创建会导致冲突
         """
         if not SAPERA_AVAILABLE:
             return False, "Sapera SDK 不可用"
@@ -331,20 +349,41 @@ class SaperaCameraManager:
         
         print(f"[SaperaCameraManager] 开始切换相机: {self._current_camera} -> {target_camera.formatted_display_name}")
         
-        # 执行切换
-        success, message = self.connect(target_camera)
-        
-        if not success:
-            # 切换失败，尝试回退到上一次成功的连接
-            if self._last_successful_camera and self._last_successful_camera != target_camera:
-                print(f"[SaperaCameraManager] 切换失败，尝试回退到: {self._last_successful_camera.formatted_display_name}")
-                fallback_success, fallback_message = self.connect(self._last_successful_camera)
-                if fallback_success:
-                    message += f"\n已自动回退到上一次成功的连接: {self._last_successful_camera.formatted_display_name}"
-                else:
-                    message += f"\n回退也失败: {fallback_message}"
-        
-        return success, message
+        try:
+            # ★★★ 调用主程序的 CameraController 进行切换 ★★★
+            from InspectMainWindow import CameraController
+            cam_ctrl = CameraController()
+            
+            # 调用 switch_to 方法切换相机
+            success = cam_ctrl.switch_to(target_camera.server_name)
+            
+            if success:
+                self._current_camera = target_camera
+                self._last_successful_camera = target_camera
+                self._connected = True
+                
+                from camera.camera_info_model import CameraConnectionStatus
+                self._notify_state_change(CameraConnectionStatus.CONNECTED, target_camera)
+                
+                return True, f"成功切换到 {target_camera.formatted_display_name}"
+            else:
+                # 切换失败，尝试回退
+                if self._last_successful_camera and self._last_successful_camera != target_camera:
+                    print(f"[SaperaCameraManager] 切换失败，尝试回退到: {self._last_successful_camera.formatted_display_name}")
+                    fallback_success = cam_ctrl.switch_to(self._last_successful_camera.server_name)
+                    if fallback_success:
+                        from camera.camera_info_model import CameraConnectionStatus
+                        self._notify_state_change(CameraConnectionStatus.CONNECTED, self._last_successful_camera)
+                        return False, f"切换失败，已自动回退到 {self._last_successful_camera.formatted_display_name}"
+                
+                from camera.camera_info_model import CameraConnectionStatus
+                self._notify_state_change(CameraConnectionStatus.ERROR)
+                return False, f"切换失败: 无法连接到 {target_camera.server_name}"
+                
+        except Exception as e:
+            from camera.camera_info_model import CameraConnectionStatus
+            self._notify_state_change(CameraConnectionStatus.ERROR)
+            return False, f"切换异常: {e}"
     
     def get_current_frame(self):
         """获取当前帧（如果有的话）"""

@@ -1570,14 +1570,19 @@ class InspectMainWindow:
                     name = CAMERA_DISPLAY_NAMES.get(sn, sn)
                 except Exception:
                     name = self.cam.current_server_name
-            # 如果获取不到IP，用服务器名占位，但标记为已连接
-            cam_info = CameraInfo(
-                ip=ip or self.cam.current_server_name,
-                port=5024,
-                name=name or self.cam.current_server_name,
-                server_name=self.cam.current_server_name,
-            )
-            mgr.set_initial_camera(cam_info)
+            
+            # ★★★ 修复：不要在初始化时创建不完整的相机对象 ★★★
+            # 等待第一次扫描完成后，用完整的相机信息替换
+            # 这样可以避免下拉框中出现重复的相机条目
+            
+            # 暂时不设置初始相机，等待扫描完成
+            # cam_info = CameraInfo(
+            #     ip=ip or self.cam.current_server_name,
+            #     port=5024,
+            #     name=name or self.cam.current_server_name,
+            #     server_name=self.cam.current_server_name,
+            # )
+            # mgr.set_initial_camera(cam_info)
 
         def _on_first_scan(sapera_cameras, network_cameras=None):
             # 兼容新的回调格式，合并两种类型的相机
@@ -1588,6 +1593,7 @@ class InspectMainWindow:
                 # 新格式：两个参数
                 cameras = list(sapera_cameras) + list(network_cameras)
             
+            # ★★★ 修复：扫描完成后，设置当前连接的相机 ★★★
             sn = self.cam.current_server_name
             if sn:
                 for cam in cameras:
