@@ -46,36 +46,44 @@ class SaperaCameraInfo:
         """
         格式化显示名称，按需求文档 FC-05 格式：
         "用户自定义名 (IP)" 或 "型号 (IP)"
+        
+        注意：只有在有真实IP地址时才使用IP格式，否则显示"未知IP"
         """
-        # 如果 display_name 已经是格式化的（包含括号），直接返回
+        # 如果 display_name 已经是格式化的（包含括号和IP地址），直接返回
         if self.display_name and '(' in self.display_name and ')' in self.display_name:
-            return self.display_name
+            # 检查括号里是否是IP地址格式（而不是服务器名）
+            import re
+            ip_pattern = r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+            if re.search(ip_pattern, self.display_name):
+                return self.display_name
         
         # 否则进行格式化
         device_info = self.device_info or {}
         ip_address = device_info.get('ip_address', '').strip()
         
-        # 优先使用已设置的 display_name（来自配置文件或其他逻辑）
-        if self.display_name and self.display_name != self.server_name:
-            name = self.display_name
+        # 确定相机名称
+        # 优先使用 Device User ID，其次使用型号，最后使用服务器名
+        user_id = device_info.get('user_id', '').strip()
+        model = device_info.get('model', '').strip()
+        
+        # 过滤掉看起来像数字ID的名称
+        if user_id and not user_id.isdigit() and len(user_id) < 20:
+            name = user_id
+        elif model and not model.isdigit() and len(model) < 20:
+            name = model
         else:
-            # 如果没有设置 display_name，则从设备信息中获取
-            user_id = device_info.get('user_id', '').strip()
-            model = device_info.get('model', '').strip()
-            # 过滤掉看起来像数字ID的名称
-            if user_id and not user_id.isdigit() and len(user_id) < 20:
-                name = user_id
-            elif model and not model.isdigit() and len(model) < 20:
-                name = model
+            # 如果 display_name 已设置且不是服务器名，使用它
+            if self.display_name and self.display_name != self.server_name:
+                name = self.display_name
             else:
                 name = self.server_name
         
-        # 确保使用实际的IP地址
+        # 确保使用实际的IP地址，而不是服务器名
         if ip_address:
             return f"{name} ({ip_address})"
         else:
-            # 如果没有IP地址，显示服务器名
-            return f"{name} ({self.server_name})"
+            # 如果没有IP地址，显示"未知IP"而不是服务器名
+            return f"{name} (未知IP)"
     
     @property
     def unique_identifier(self) -> str:
@@ -103,7 +111,14 @@ class SaperaCameraInfo:
     def __eq__(self, other):
         if not isinstance(other, SaperaCameraInfo):
             return False
-        # 优先比较序列号，其次比较服务器名
+        
+        # 优先比较服务器名（最可靠的标识）
+        # 因为同一台相机的 server_name 始终不变，而序列号可能在初始化时未获取到
+        if self.server_name and other.server_name:
+            if self.server_name == other.server_name:
+                return True
+        
+        # 其次比较序列号
         device_info = self.device_info or {}
         other_device_info = other.device_info or {}
         
@@ -113,9 +128,13 @@ class SaperaCameraInfo:
         if self_serial and other_serial:
             return self_serial == other_serial
         
-        return self.server_name == other.server_name
+        return False
     
     def __hash__(self):
+        # 优先使用服务器名作为哈希值（最可靠的标识）
+        if self.server_name:
+            return hash(self.server_name)
+        
         device_info = self.device_info or {}
         serial = device_info.get('serial', '')
         return hash(serial) if serial else hash(self.server_name)
@@ -193,12 +212,16 @@ class SaperaCameraDiscovery:
         try:
             found_cameras = []
             
+            # ★★★ 清空上次的扫描结果，避免显示已断开的相机 ★★★
+            self._last_results = []
+            
             # 1. 对于Camera Link相机，先检测新服务器
             if detect_new_servers:
                 self._detect_new_servers()
             
             # 2. 获取服务器数量
             server_count = SapManager.GetServerCount()
+            print(f"[Sapera] Found {server_count} server(s)")
             
             if on_progress:
                 on_progress(0, server_count)
@@ -264,24 +287,32 @@ class SaperaCameraDiscovery:
                     # 获取IP地址用于显示
                     ip_address = device_info_dict.get('ip_address', '').strip()
                     
-                    # 如果无法从设备获取IP地址，尝试通过网络扫描获取
+                    # 如果无法从设备获取IP地址，尝试其他方法
                     if not ip_address and is_accessible:
-                        # 对于GigE Vision相机，网络扫描可能不适用，先尝试ping已知IP
-                        if server_name == "Genie_M1600_1":
+                        # 方法1：通过 ping 已知IP段发现（对于GigE Vision相机）
+                        # 根据服务器名称尝试常见的IP地址
+                        known_ips = []
+                        if "Genie_M1600_1" in server_name:
                             known_ips = ["192.168.11.136", "192.168.11.110", "192.168.1.100", "192.168.0.100"]
-                            for test_ip in known_ips:
-                                try:
-                                    import subprocess
-                                    result = subprocess.run(['ping', '-n', '1', '-w', '1000', test_ip], 
-                                                          capture_output=True, text=True, timeout=2)
-                                    if result.returncode == 0:
-                                        ip_address = test_ip
-                                        print(f"[Sapera] 通过ping发现 {server_name} 的IP: {ip_address}")
-                                        break
-                                except Exception as e:
-                                    continue
+                        elif "Genie_M1600_2" in server_name:
+                            known_ips = ["192.168.11.110", "192.168.11.136", "192.168.1.101", "192.168.0.101"]
+                        else:
+                            # 通用的常见IP段
+                            known_ips = ["192.168.11.136", "192.168.11.110", "192.168.1.100", "192.168.0.100"]
                         
-                        # 如果ping也没找到，再尝试网络扫描
+                        for test_ip in known_ips:
+                            try:
+                                import subprocess
+                                result = subprocess.run(['ping', '-n', '1', '-w', '500', test_ip], 
+                                                      capture_output=True, text=True, timeout=1)
+                                if result.returncode == 0:
+                                    ip_address = test_ip
+                                    print(f"[Sapera] 通过ping发现 {server_name} 的IP: {ip_address}")
+                                    break
+                            except Exception:
+                                continue
+                        
+                        # 方法2：尝试通过网络扫描获取
                         if not ip_address:
                             try:
                                 from camera.ip_discovery_helper import get_cached_camera_ips, match_sapera_camera_to_ip
@@ -293,26 +324,18 @@ class SaperaCameraDiscovery:
                             except Exception as e:
                                 print(f"[Sapera] 网络扫描匹配IP失败: {e}")
                     
-                    # 如果还是没有IP，对于已知的相机尝试ping常见IP
-                    if not ip_address and server_name == "Genie_M1600_1":
-                        known_ips = ["192.168.11.136", "192.168.11.110", "192.168.1.100", "192.168.0.100"]
-                        for test_ip in known_ips:
-                            try:
-                                import subprocess
-                                result = subprocess.run(['ping', '-n', '1', '-w', '1000', test_ip], 
-                                                      capture_output=True, text=True, timeout=2)
-                                if result.returncode == 0:
-                                    ip_address = test_ip
-                                    print(f"[Sapera] 通过ping发现 {server_name} 的IP: {ip_address}")
-                                    break
-                            except Exception as e:
-                                continue
+                    # ★★★ 如果无法获取IP地址，跳过该相机（可能已断开或被占用）★★★
+                    if not ip_address:
+                        print(f"[Sapera] 跳过无IP地址的相机: {server_name}（可能已断开连接）")
+                        continue
+                    
+                    # ★★★ 如果无法获取IP地址，跳过该相机（可能已断开或被占用）★★★
+                    if not ip_address:
+                        print(f"[Sapera] 跳过无IP地址的相机: {server_name}（可能已断开连接）")
+                        continue
                     
                     # 格式化显示名称：名称 (IP)
-                    if ip_address:
-                        display_name = f"{camera_name} ({ip_address})"
-                    else:
-                        display_name = f"{camera_name} (未知IP)"
+                    display_name = f"{camera_name} ({ip_address})"
                     
                     camera_info = SaperaCameraInfo(
                         server_name=server_name,
@@ -409,161 +432,162 @@ class SaperaCameraDiscovery:
             if not acq_device.Create():
                 print(f"[Sapera] 无法创建设备 {server_name}（可能被占用）")
                 return device_info
-                try:
-                    # 按需求文档 FC-05 读取 GenICam 标准特征
-                    
-                    # 用户自定义名称
-                    if acq_device.IsFeatureAvailable("DeviceUserID"):
-                        result = acq_device.GetFeatureValue("DeviceUserID")
-                        if isinstance(result, tuple) and len(result) >= 2:
-                            raw_value = result[1] if result[0] else ""
-                            # 尝试将数字转换为字符串（可能是编码的字符串）
-                            if isinstance(raw_value, (int, float)):
-                                try:
-                                    # 尝试将大整数转换为字符串
-                                    hex_str = hex(int(raw_value))[2:]  # 去掉 0x 前缀
-                                    if len(hex_str) % 2 == 1:
-                                        hex_str = '0' + hex_str
-                                    
-                                    # 尝试解码为ASCII字符串
-                                    decoded = bytes.fromhex(hex_str).decode('ascii', errors='ignore').strip('\x00')
-                                    
-                                    # 如果解码结果看起来是反向的，尝试反转
-                                    if decoded and decoded.isprintable():
-                                        # 检查是否需要反转（如果以数字开头但应该以S开头）
-                                        if decoded[0].isdigit() and decoded[-1].upper() == 'S':
-                                            decoded = decoded[::-1]  # 反转字符串
-                                        device_info['user_id'] = decoded
-                                    else:
-                                        device_info['user_id'] = str(raw_value)
-                                except:
+            
+            try:
+                # 按需求文档 FC-05 读取 GenICam 标准特征
+                
+                # 用户自定义名称
+                if acq_device.IsFeatureAvailable("DeviceUserID"):
+                    result = acq_device.GetFeatureValue("DeviceUserID")
+                    if isinstance(result, tuple) and len(result) >= 2:
+                        raw_value = result[1] if result[0] else ""
+                        # 尝试将数字转换为字符串（可能是编码的字符串）
+                        if isinstance(raw_value, (int, float)):
+                            try:
+                                # 尝试将大整数转换为字符串
+                                hex_str = hex(int(raw_value))[2:]  # 去掉 0x 前缀
+                                if len(hex_str) % 2 == 1:
+                                    hex_str = '0' + hex_str
+                                
+                                # 尝试解码为ASCII字符串
+                                decoded = bytes.fromhex(hex_str).decode('ascii', errors='ignore').strip('\x00')
+                                
+                                # 如果解码结果看起来是反向的，尝试反转
+                                if decoded and decoded.isprintable():
+                                    # 检查是否需要反转（如果以数字开头但应该以S开头）
+                                    if decoded[0].isdigit() and decoded[-1].upper() == 'S':
+                                        decoded = decoded[::-1]  # 反转字符串
+                                    device_info['user_id'] = decoded
+                                else:
                                     device_info['user_id'] = str(raw_value)
-                            else:
+                            except:
                                 device_info['user_id'] = str(raw_value)
                         else:
-                            device_info['user_id'] = str(result)
-                    
-                    # 序列号（唯一标识）
-                    if acq_device.IsFeatureAvailable("DeviceSerialNumber"):
-                        result = acq_device.GetFeatureValue("DeviceSerialNumber")
-                        if isinstance(result, tuple) and len(result) >= 2:
-                            raw_value = result[1] if result[0] else ""
-                            # 尝试解码序列号
-                            if isinstance(raw_value, (int, float)):
-                                try:
-                                    hex_str = hex(int(raw_value))[2:]
-                                    if len(hex_str) % 2 == 1:
-                                        hex_str = '0' + hex_str
-                                    decoded = bytes.fromhex(hex_str).decode('ascii', errors='ignore').strip('\x00')
-                                    if decoded and decoded.isprintable():
-                                        device_info['serial'] = decoded
-                                    else:
-                                        device_info['serial'] = str(raw_value)
-                                except:
+                            device_info['user_id'] = str(raw_value)
+                    else:
+                        device_info['user_id'] = str(result)
+                
+                # 序列号（唯一标识）
+                if acq_device.IsFeatureAvailable("DeviceSerialNumber"):
+                    result = acq_device.GetFeatureValue("DeviceSerialNumber")
+                    if isinstance(result, tuple) and len(result) >= 2:
+                        raw_value = result[1] if result[0] else ""
+                        # 尝试解码序列号
+                        if isinstance(raw_value, (int, float)):
+                            try:
+                                hex_str = hex(int(raw_value))[2:]
+                                if len(hex_str) % 2 == 1:
+                                    hex_str = '0' + hex_str
+                                decoded = bytes.fromhex(hex_str).decode('ascii', errors='ignore').strip('\x00')
+                                if decoded and decoded.isprintable():
+                                    device_info['serial'] = decoded
+                                else:
                                     device_info['serial'] = str(raw_value)
-                            else:
+                            except:
                                 device_info['serial'] = str(raw_value)
                         else:
-                            device_info['serial'] = str(result)
-                    
-                    # 型号
-                    if acq_device.IsFeatureAvailable("DeviceModelName"):
-                        result = acq_device.GetFeatureValue("DeviceModelName")
-                        if isinstance(result, tuple) and len(result) >= 2:
-                            raw_value = result[1] if result[0] else ""
-                            # 尝试解码型号
-                            if isinstance(raw_value, (int, float)):
-                                try:
-                                    hex_str = hex(int(raw_value))[2:]
-                                    if len(hex_str) % 2 == 1:
-                                        hex_str = '0' + hex_str
-                                    decoded = bytes.fromhex(hex_str).decode('ascii', errors='ignore').strip('\x00')
-                                    if decoded and decoded.isprintable():
-                                        device_info['model'] = decoded
-                                    else:
-                                        device_info['model'] = str(raw_value)
-                                except:
+                            device_info['serial'] = str(raw_value)
+                    else:
+                        device_info['serial'] = str(result)
+                
+                # 型号
+                if acq_device.IsFeatureAvailable("DeviceModelName"):
+                    result = acq_device.GetFeatureValue("DeviceModelName")
+                    if isinstance(result, tuple) and len(result) >= 2:
+                        raw_value = result[1] if result[0] else ""
+                        # 尝试解码型号
+                        if isinstance(raw_value, (int, float)):
+                            try:
+                                hex_str = hex(int(raw_value))[2:]
+                                if len(hex_str) % 2 == 1:
+                                    hex_str = '0' + hex_str
+                                decoded = bytes.fromhex(hex_str).decode('ascii', errors='ignore').strip('\x00')
+                                if decoded and decoded.isprintable():
+                                    device_info['model'] = decoded
+                                else:
                                     device_info['model'] = str(raw_value)
-                            else:
+                            except:
                                 device_info['model'] = str(raw_value)
                         else:
-                            device_info['model'] = str(result)
-                    
-                    # 当前IP地址
-                    if acq_device.IsFeatureAvailable("GevCurrentIPAddress"):
-                        try:
-                            result = acq_device.GetFeatureValue("GevCurrentIPAddress")
-                            ip_value = result[1] if isinstance(result, tuple) and len(result) >= 2 else result
-                            
-                            if isinstance(ip_value, (int, float)):
-                                # 将整数IP转换为点分十进制格式
-                                ip_int = int(ip_value)
-                                ip_str = f"{(ip_int >> 24) & 0xFF}.{(ip_int >> 16) & 0xFF}.{(ip_int >> 8) & 0xFF}.{ip_int & 0xFF}"
-                                device_info['ip_address'] = ip_str
-                            else:
-                                device_info['ip_address'] = str(ip_value)
-                        except Exception as e:
-                            print(f"获取IP地址失败: {e}")
-                    
-                    # 其他设备信息
-                    if acq_device.IsFeatureAvailable("DeviceVendorName"):
-                        result = acq_device.GetFeatureValue("DeviceVendorName")
-                        if isinstance(result, tuple) and len(result) >= 2:
-                            device_info['vendor'] = str(result[1]) if result[0] else ""
+                            device_info['model'] = str(raw_value)
+                    else:
+                        device_info['model'] = str(result)
+                
+                # 当前IP地址
+                if acq_device.IsFeatureAvailable("GevCurrentIPAddress"):
+                    try:
+                        result = acq_device.GetFeatureValue("GevCurrentIPAddress")
+                        ip_value = result[1] if isinstance(result, tuple) and len(result) >= 2 else result
+                        
+                        if isinstance(ip_value, (int, float)):
+                            # 将整数IP转换为点分十进制格式
+                            ip_int = int(ip_value)
+                            ip_str = f"{(ip_int >> 24) & 0xFF}.{(ip_int >> 16) & 0xFF}.{(ip_int >> 8) & 0xFF}.{ip_int & 0xFF}"
+                            device_info['ip_address'] = ip_str
                         else:
-                            device_info['vendor'] = str(result)
-                    
-                    if acq_device.IsFeatureAvailable("DeviceVersion"):
-                        result = acq_device.GetFeatureValue("DeviceVersion")
-                        if isinstance(result, tuple) and len(result) >= 2:
-                            device_info['version'] = str(result[1]) if result[0] else ""
-                        else:
-                            device_info['version'] = str(result)
-                    
-                    # 获取支持的像素格式
-                    if acq_device.IsFeatureAvailable("PixelFormat"):
-                        try:
-                            result = acq_device.GetFeatureValue("PixelFormat")
-                            current_format = result[1] if isinstance(result, tuple) and len(result) >= 2 else result
-                            device_info['pixel_formats'] = [str(current_format)]
-                        except:
-                            pass
-                    
-                    # 获取关键特性列表
-                    key_features = [
-                        "TriggerMode", "ExposureTime", "ExposureTimeRaw", "Gain", "GainRaw",
-                        "Width", "Height", "AcquisitionFrameRate", "GevSCPSPacketSize",
-                        "DeviceTemperature", "DeviceUptime"
-                    ]
-                    
-                    available_features = []
-                    for feature in key_features:
-                        if acq_device.IsFeatureAvailable(feature):
-                            available_features.append(feature)
-                    
-                    device_info['features'] = available_features
-                    
-                    # 调试输出
-                    print(f"[Sapera] 设备 {server_name} 信息:")
-                    print(f"  用户名: {device_info['user_id']}")
-                    print(f"  序列号: {device_info['serial']}")
-                    print(f"  型号: {device_info['model']}")
-                    print(f"  IP地址: {device_info['ip_address']}")
-                    print(f"  厂商: {device_info['vendor']}")
-                    
-                except Exception as e:
-                    print(f"获取设备 {server_name} 详细信息失败: {e}")
-                finally:
-                    # 确保设备被正确销毁和释放
-                    if acq_device:
-                        try:
-                            acq_device.Destroy()
-                        except:
-                            pass
-                        try:
-                            acq_device.Dispose()
-                        except:
-                            pass
+                            device_info['ip_address'] = str(ip_value)
+                    except Exception as e:
+                        print(f"获取IP地址失败: {e}")
+                
+                # 其他设备信息
+                if acq_device.IsFeatureAvailable("DeviceVendorName"):
+                    result = acq_device.GetFeatureValue("DeviceVendorName")
+                    if isinstance(result, tuple) and len(result) >= 2:
+                        device_info['vendor'] = str(result[1]) if result[0] else ""
+                    else:
+                        device_info['vendor'] = str(result)
+                
+                if acq_device.IsFeatureAvailable("DeviceVersion"):
+                    result = acq_device.GetFeatureValue("DeviceVersion")
+                    if isinstance(result, tuple) and len(result) >= 2:
+                        device_info['version'] = str(result[1]) if result[0] else ""
+                    else:
+                        device_info['version'] = str(result)
+                
+                # 获取支持的像素格式
+                if acq_device.IsFeatureAvailable("PixelFormat"):
+                    try:
+                        result = acq_device.GetFeatureValue("PixelFormat")
+                        current_format = result[1] if isinstance(result, tuple) and len(result) >= 2 else result
+                        device_info['pixel_formats'] = [str(current_format)]
+                    except:
+                        pass
+                
+                # 获取关键特性列表
+                key_features = [
+                    "TriggerMode", "ExposureTime", "ExposureTimeRaw", "Gain", "GainRaw",
+                    "Width", "Height", "AcquisitionFrameRate", "GevSCPSPacketSize",
+                    "DeviceTemperature", "DeviceUptime"
+                ]
+                
+                available_features = []
+                for feature in key_features:
+                    if acq_device.IsFeatureAvailable(feature):
+                        available_features.append(feature)
+                
+                device_info['features'] = available_features
+                
+                # 调试输出
+                print(f"[Sapera] 设备 {server_name} 信息:")
+                print(f"  用户名: {device_info['user_id']}")
+                print(f"  序列号: {device_info['serial']}")
+                print(f"  型号: {device_info['model']}")
+                print(f"  IP地址: {device_info['ip_address']}")
+                print(f"  厂商: {device_info['vendor']}")
+                
+            except Exception as e:
+                print(f"获取设备 {server_name} 详细信息失败: {e}")
+            finally:
+                # 确保设备被正确销毁和释放
+                if acq_device:
+                    try:
+                        acq_device.Destroy()
+                    except:
+                        pass
+                    try:
+                        acq_device.Dispose()
+                    except:
+                        pass
         
         except Exception as e:
             print(f"创建设备 {server_name} 失败: {e}")

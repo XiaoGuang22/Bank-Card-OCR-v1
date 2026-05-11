@@ -166,7 +166,7 @@ class CameraStatusBar(tk.Frame):
         if self._manager.is_scanning or self._discovery.is_scanning:
             return
         
-        # 清空列表，显示扫描中提示
+        # ★★★ 清空当前列表，避免显示已断开的相机 ★★★
         self._camera_list = []
         self._combo["values"] = ["扫描中…"]
         self._combo_var.set("扫描中…")
@@ -478,38 +478,34 @@ class CameraStatusBar(tk.Frame):
     # ------------------------------------------------------------------
 
     def _refresh_display(self, state: str, camera):
-        """根据状态更新状态灯和信息文本"""
+        """根据状态更新状态灯和信息文本（不修改下拉框列表）"""
         # 停止之前的闪烁
         self._stop_blink()
 
         if state == "connected" and camera:
             self._set_led(self._COLOR_CONNECTED)
-            
+
             # 获取相机显示名称
-            if hasattr(camera, 'formatted_display_name'):
-                display_name = camera.formatted_display_name
-            elif hasattr(camera, 'display_name'):
-                display_name = camera.display_name
-            else:
-                display_name = str(camera)
-            
+            display_name = self._get_camera_display_name(camera)
+
             self._info_var.set(f"当前相机：{display_name}")
-            
-            # 确保相机在下拉框（扫描原因导致列表空时也能显示）
+
+            # 只更新选中项，不往列表里追加
+            # 注意：不在这里修改下拉框的 values，只修改当前选中项
             vals = list(self._combo["values"])
-            if "无可用相机" in vals: 
-                vals.remove("无可用相机")
-            if display_name not in vals: 
-                vals.append(display_name)
-            self._combo["values"] = vals
-            self._combo_var.set(display_name)
+            if vals and vals != ["无可用相机"] and vals != ["扫描中…"]:
+                # 如果列表中有这个相机，选中它
+                if display_name in vals:
+                    self._combo_var.set(display_name)
+                # 如果列表中没有这个相机，不做任何操作（等待扫描完成后更新）
+            else:
+                # 如果列表为空或显示占位符，暂时不更新
+                # 等待扫描完成后由 _update_camera_list 统一处理
+                pass
 
         elif state in ("connecting", "scanning"):
             self._start_blink()
-            if state == "connecting":
-                self._info_var.set("连接中…")
-            else:
-                self._info_var.set("扫描中…")
+            self._info_var.set("连接中…" if state == "connecting" else "扫描中…")
 
         elif state == "failed":
             self._set_led(self._COLOR_DISCONNECTED)
@@ -520,51 +516,129 @@ class CameraStatusBar(tk.Frame):
             self._info_var.set("未连接")
 
     def _update_camera_list(self, cameras: list):
-        """扫描完成后更新下拉框"""
-        self._camera_list = list(cameras) if cameras else []
+        """
+        扫描完成后用新列表完整替换下拉框，智能去重和合并
         
-        # 获取当前连接的相机
+        逻辑：
+        1. 遍历新扫描的相机列表
+        2. 对于每个相机，检查是否已经在列表中（基于相等性比较）
+        3. 如果存在旧版本，用新版本替换（新版本通常有更完整的信息，如IP地址）
+        4. 如果不存在，添加到列表
+        5. ★★★ 注意：不自动添加当前连接的相机，只使用扫描结果 ★★★
+        """
+        # 创建一个字典，用于快速查找和去重（基于 server_name）
+        camera_dict = {}
+        
+        # ★★★ 修改：不自动添加当前连接的相机，只使用扫描结果 ★★★
+        # 这样可以确保拔掉相机后，刷新时会清空列表
+        
+        # 添加新扫描的相机
+        if cameras:
+            for camera in cameras:
+                key = self._get_camera_key(camera)
+                if key:
+                    # 如果已存在，比较哪个版本更完整
+                    if key in camera_dict:
+                        existing = camera_dict[key]
+                        # 如果新相机有IP而旧相机没有，用新相机替换
+                        if self._is_camera_more_complete(camera, existing):
+                            camera_dict[key] = camera
+                    else:
+                        camera_dict[key] = camera
+        
+        # 转换为列表
+        self._camera_list = list(camera_dict.values())
+        
+        # 获取当前连接的相机（用于判断选中项）
         current = self._manager.current_camera or self._sapera_manager.current_camera
         
-        # 如果当前相机不在列表中，添加进去
-        if current and current not in self._camera_list:
-            self._camera_list.append(current)
-        
+        # 构建显示名称列表（已经去重）
         if self._camera_list:
-            # 获取所有相机的显示名称
             names = []
             for camera in self._camera_list:
-                if hasattr(camera, 'formatted_display_name'):
-                    names.append(camera.formatted_display_name)
-                elif hasattr(camera, 'display_name'):
-                    names.append(camera.display_name)
-                else:
-                    names.append(str(camera))
+                name = self._get_camera_display_name(camera)
+                names.append(name)
             
+            # 完整替换列表
             self._combo["values"] = names
             
             # 设置当前选中项
             if current:
-                if hasattr(current, 'formatted_display_name'):
-                    current_name = current.formatted_display_name
-                elif hasattr(current, 'display_name'):
-                    current_name = current.display_name
-                else:
-                    current_name = str(current)
-                
+                current_name = self._get_camera_display_name(current)
+                # 只有当前相机在扫描结果中时，才选中它
                 if current_name in names:
                     self._combo_var.set(current_name)
                 else:
+                    # 当前相机不在扫描结果中（可能已断开），选中第一个
                     self._combo_var.set(names[0])
             else:
                 self._combo_var.set(names[0])
         else:
+            # ★★★ 扫描结果为空，显示"无可用相机" ★★★
             self._combo["values"] = ["无可用相机"]
             self._combo_var.set("无可用相机")
         
-        # 刷新显示状态
-        current_state = "connected" if current else "disconnected"
-        self._refresh_display(current_state, current)
+        # 更新状态灯和文字
+        # ★★★ 如果扫描结果为空，设置为断开状态 ★★★
+        if self._camera_list:
+            # ★★★ 优先使用扫描结果中的相机信息，而不是当前连接的相机 ★★★
+            # 因为当前连接的相机可能是旧的，扫描结果才是最新的
+            if current and current in self._camera_list:
+                # 当前相机在扫描结果中，使用当前相机
+                display_camera = current
+            elif self._camera_list:
+                # 当前相机不在扫描结果中，使用扫描结果中的第一个
+                display_camera = self._camera_list[0]
+            else:
+                display_camera = current
+            
+            current_state = "connected" if display_camera else "disconnected"
+            self._refresh_display(current_state, display_camera)
+        else:
+            # 扫描结果为空，设置为断开状态
+            self._refresh_display("disconnected", None)
+    
+    def _get_camera_key(self, camera) -> str:
+        """
+        获取相机的唯一标识键
+        
+        优先使用 server_name（Sapera相机），其次使用 IP+端口（网络相机）
+        """
+        if hasattr(camera, 'server_name') and camera.server_name:
+            return f"sapera:{camera.server_name}"
+        elif hasattr(camera, 'ip') and camera.ip:
+            port = getattr(camera, 'port', 5024)
+            return f"network:{camera.ip}:{port}"
+        return None
+    
+    def _is_camera_more_complete(self, new_camera, existing_camera) -> bool:
+        """
+        判断新相机信息是否比现有相机更完整
+        
+        主要比较是否有IP地址信息
+        """
+        # 对于 Sapera 相机，检查 device_info 中的 ip_address
+        if hasattr(new_camera, 'device_info') and hasattr(existing_camera, 'device_info'):
+            new_ip = (new_camera.device_info or {}).get('ip_address', '').strip()
+            existing_ip = (existing_camera.device_info or {}).get('ip_address', '').strip()
+            
+            # 如果新相机有IP而旧相机没有，新相机更完整
+            if new_ip and not existing_ip:
+                return True
+            # 如果两者都有IP或都没有IP，保持现有的
+            return False
+        
+        # 对于网络相机，默认保持现有的
+        return False
+    
+    def _get_camera_display_name(self, camera) -> str:
+        """获取相机的显示名称"""
+        if hasattr(camera, 'formatted_display_name'):
+            return camera.formatted_display_name
+        elif hasattr(camera, 'display_name'):
+            return camera.display_name
+        else:
+            return str(camera)
 
     # ------------------------------------------------------------------
     # 状态灯控制
