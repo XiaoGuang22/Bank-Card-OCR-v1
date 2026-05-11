@@ -20,7 +20,7 @@ SERVER_NAME = "Genie_M1600_1"  # 或者 "Genie_M1600_1"，需要确认
 # 相机显示名称映射 {Sapera服务器名: 显示名称}
 # 多相机时每台相机各配一条，如 "Genie_M1600_2": "S1024036"
 CAMERA_DISPLAY_NAMES = {
-    "Genie_M1600_1": "S1024035",
+    "Genie_M1600_1": "S1049704",  # 更新为实际的 Device User ID
 }
 
 # 资源索引（通常第一个相机为 0）

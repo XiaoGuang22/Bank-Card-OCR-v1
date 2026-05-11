@@ -11,6 +11,8 @@
 权限控制：
 - 管理员/技术员：所有控件可用
 - 操作员：下拉框、刷新、切换按钮全部禁用，仅显示状态灯和信息文本
+
+集成增强的相机发现和切换功能，支持 Sapera SDK 和网络相机。
 """
 
 import tkinter as tk
@@ -19,9 +21,12 @@ import threading
 
 
 # 延迟导入，避免循环依赖
-def _get_camera_manager():
-    from managers.camera_manager import CameraManager, ConnectionState
-    return CameraManager(), ConnectionState
+def _get_camera_managers():
+    from managers.camera_manager import EnhancedCameraManager
+    from camera.sapera_camera_discovery import get_sapera_discovery
+    from camera.sapera_camera_manager import get_sapera_camera_manager
+    from camera.camera_info_model import CameraConnectionStatus
+    return EnhancedCameraManager(), get_sapera_discovery(), get_sapera_camera_manager(), CameraConnectionStatus
 
 
 class CameraStatusBar(tk.Frame):
@@ -54,11 +59,11 @@ class CameraStatusBar(tk.Frame):
         self._blink_job = None
         self._blink_visible = True
 
-        # 当前下拉框选项列表（CameraInfo 对象）
+        # 当前下拉框选项列表（相机信息对象）
         self._camera_list = []
 
-        # 获取 CameraManager 单例
-        self._manager, self._ConnectionState = _get_camera_manager()
+        # 获取管理器实例
+        self._manager, self._discovery, self._sapera_manager, self._ConnectionStatus = _get_camera_managers()
 
         # 构建 UI
         self._build_ui()
@@ -66,9 +71,16 @@ class CameraStatusBar(tk.Frame):
         # 注册回调
         self._manager.on_state_change(self._on_state_change)
         self._manager.on_scan_complete(self._on_scan_complete)
+        
+        # 注册 Sapera 管理器回调
+        self._sapera_manager.add_state_callback(self._on_sapera_state_change)
 
         # 根据当前状态初始化显示
-        self._refresh_display(self._manager.state, self._manager.current_camera)
+        current_camera = self._manager.current_camera or self._sapera_manager.current_camera
+        if current_camera:
+            self._refresh_display(self._ConnectionStatus.CONNECTED, current_camera)
+        else:
+            self._refresh_display(self._ConnectionStatus.DISCONNECTED, None)
 
     # ------------------------------------------------------------------
     # UI 构建
@@ -151,13 +163,19 @@ class CameraStatusBar(tk.Frame):
 
     def _on_refresh_click(self):
         """点击刷新按钮：触发重新扫描"""
-        if self._manager.is_scanning:
+        if self._manager.is_scanning or self._discovery.is_scanning:
             return
+        
         # 清空列表，显示扫描中提示
         self._camera_list = []
         self._combo["values"] = ["扫描中…"]
         self._combo_var.set("扫描中…")
-        self._manager.start_scan()
+        
+        # 设置扫描状态
+        self._refresh_display(self._ConnectionStatus.SCANNING, None)
+        
+        # 启动扫描
+        self._manager.start_scan(force_refresh=True)
 
     def _on_switch_click(self):
         """点击切换连接按钮"""
@@ -166,17 +184,21 @@ class CameraStatusBar(tk.Frame):
             messagebox.showwarning("切换相机", "请先选择一台可用相机", parent=self)
             return
 
-        # 找到对应的 CameraInfo
-        target = next(
-            (c for c in self._camera_list if c.display_name == selected),
-            None
-        )
+        # 找到对应的相机信息
+        target = None
+        for camera in self._camera_list:
+            # 支持 Sapera 相机和网络相机的显示名称匹配
+            display_name = getattr(camera, 'formatted_display_name', None) or getattr(camera, 'display_name', str(camera))
+            if display_name == selected:
+                target = camera
+                break
+        
         if target is None:
             messagebox.showwarning("切换相机", "未找到所选相机信息", parent=self)
             return
 
         # 若目标与当前相同，忽略
-        current = self._manager.current_camera
+        current = self._manager.current_camera or self._sapera_manager.current_camera
         if current and current == target:
             messagebox.showinfo("切换相机", "已是当前连接的相机，无需切换", parent=self)
             return
@@ -194,12 +216,67 @@ class CameraStatusBar(tk.Frame):
             self._stop_detection()
 
         # 执行切换（异步）
-        self._manager.switch_camera(
-            target=target,
-            user_name=self.username,
-            user_role=self.role,
-            on_result=self._on_switch_result,
-        )
+        self._execute_camera_switch(target)
+    
+    def _execute_camera_switch(self, target):
+        """执行相机切换"""
+        # 判断是 Sapera 相机还是网络相机
+        if hasattr(target, 'server_name') and target.server_name:
+            # Sapera 相机切换
+            threading.Thread(
+                target=self._switch_sapera_camera,
+                args=(target,),
+                daemon=True
+            ).start()
+        else:
+            # 网络相机切换
+            self._manager.switch_camera(
+                target=target,
+                user_name=self.username,
+                user_role=self.role,
+                on_result=self._on_switch_result,
+            )
+    
+    def _switch_sapera_camera(self, target):
+        """切换 Sapera 相机（在后台线程中执行）"""
+        try:
+            success, message = self._sapera_manager.switch_camera(target)
+            # 线程安全的回调
+            def callback():
+                self._on_switch_result(success, message, self.role)
+            
+            try:
+                self.after_idle(callback)
+            except RuntimeError:
+                import threading
+                if threading.current_thread() is threading.main_thread():
+                    callback()
+                else:
+                    def delayed_callback():
+                        try:
+                            self.after_idle(callback)
+                        except:
+                            pass
+                    threading.Timer(0.1, delayed_callback).start()
+                    
+        except Exception as e:
+            # 线程安全的错误回调
+            def error_callback():
+                self._on_switch_result(False, f"切换异常: {e}", self.role)
+            
+            try:
+                self.after_idle(error_callback)
+            except RuntimeError:
+                import threading
+                if threading.current_thread() is threading.main_thread():
+                    error_callback()
+                else:
+                    def delayed_error_callback():
+                        try:
+                            self.after_idle(error_callback)
+                        except:
+                            pass
+                    threading.Timer(0.1, delayed_error_callback).start()
 
     def _is_detection_running(self) -> bool:
         """判断当前是否有检测在运行"""
@@ -233,8 +310,10 @@ class CameraStatusBar(tk.Frame):
             print(f"[CameraStatusBar] 停止检测失败: {e}")
 
     def _on_switch_result(self, success: bool, message: str, user_role: str = ""):
-        """切换完成回调（在后台线程中调用，需 after 回到主线程）"""
+        """切换完成回调（在后台线程中调用，需要线程安全的UI更新）"""
         def _show():
+            if self._destroyed:
+                return
             if success:
                 # 切换成功后提示用户确认旧图像，防止误用
                 self._notify_stale_image()
@@ -244,7 +323,24 @@ class CameraStatusBar(tk.Frame):
                     f"{message}\n\n已自动恢复到上一次成功的连接。",
                     parent=self,
                 )
-        self.after(0, _show)
+        
+        if self._destroyed:
+            return
+        
+        # 线程安全的UI更新
+        try:
+            self.after_idle(_show)
+        except RuntimeError:
+            import threading
+            if threading.current_thread() is threading.main_thread():
+                _show()
+            else:
+                def delayed_update():
+                    try:
+                        self.after_idle(_show)
+                    except:
+                        pass
+                threading.Timer(0.1, delayed_update).start()
 
     def _notify_stale_image(self):
         """
@@ -262,10 +358,21 @@ class CameraStatusBar(tk.Frame):
             if run_interface and hasattr(run_interface, 'clear_current_frame'):
                 run_interface.clear_current_frame()
 
+            # 获取当前相机名称
+            current_camera = self._manager.current_camera or self._sapera_manager.current_camera
+            camera_name = "新相机"
+            if current_camera:
+                if hasattr(current_camera, 'formatted_display_name'):
+                    camera_name = current_camera.formatted_display_name
+                elif hasattr(current_camera, 'display_name'):
+                    camera_name = current_camera.display_name
+                else:
+                    camera_name = str(current_camera)
+
             # 弹出提示（非阻塞）
             messagebox.showinfo(
                 "相机已切换",
-                f"相机已切换至 {self._manager.current_camera.display_name if self._manager.current_camera else '新相机'}。\n\n"
+                f"相机已切换至 {camera_name}。\n\n"
                 "当前图像已清除，请重新拍照或确认后再继续检测。",
                 parent=self,
             )
@@ -273,20 +380,80 @@ class CameraStatusBar(tk.Frame):
             print(f"[CameraStatusBar] 旧图像提示失败: {e}")
 
     # ------------------------------------------------------------------
-    # CameraManager 回调（后台线程调用，需 after 回到主线程）
+    # 回调处理（后台线程调用，需 after 回到主线程）
     # ------------------------------------------------------------------
 
     def _on_state_change(self, state: str, camera):
-        """连接状态变化回调"""
+        """连接状态变化回调（来自 EnhancedCameraManager）"""
         if self._destroyed:
             return
-        self.after(0, lambda: self._safe_refresh_display(state, camera))
+        # 检查是否在主线程中
+        try:
+            self.after_idle(lambda: self._safe_refresh_display(state, camera))
+        except RuntimeError:
+            # 如果不在主线程，使用线程安全的方式
+            import threading
+            if threading.current_thread() is threading.main_thread():
+                self._safe_refresh_display(state, camera)
+            else:
+                # 在后台线程中，延迟执行
+                def delayed_update():
+                    try:
+                        self.after_idle(lambda: self._safe_refresh_display(state, camera))
+                    except:
+                        pass
+                threading.Timer(0.1, delayed_update).start()
+    
+    def _on_sapera_state_change(self, status, camera):
+        """Sapera 相机状态变化回调"""
+        if self._destroyed:
+            return
+        # 将 CameraConnectionStatus 转换为字符串状态
+        state_map = {
+            self._ConnectionStatus.CONNECTED: "connected",
+            self._ConnectionStatus.CONNECTING: "connecting", 
+            self._ConnectionStatus.SCANNING: "scanning",
+            self._ConnectionStatus.DISCONNECTED: "disconnected",
+            self._ConnectionStatus.ERROR: "failed"
+        }
+        state_str = state_map.get(status, "disconnected")
+        
+        # 线程安全的UI更新
+        try:
+            self.after_idle(lambda: self._safe_refresh_display(state_str, camera))
+        except RuntimeError:
+            import threading
+            if threading.current_thread() is threading.main_thread():
+                self._safe_refresh_display(state_str, camera)
+            else:
+                def delayed_update():
+                    try:
+                        self.after_idle(lambda: self._safe_refresh_display(state_str, camera))
+                    except:
+                        pass
+                threading.Timer(0.1, delayed_update).start()
 
-    def _on_scan_complete(self, cameras: list):
-        """扫描完成回调"""
+    def _on_scan_complete(self, sapera_cameras: list, network_cameras: list):
+        """扫描完成回调（来自 EnhancedCameraManager）"""
         if self._destroyed:
             return
-        self.after(0, lambda: self._safe_update_camera_list(cameras))
+        # 合并两种类型的相机
+        all_cameras = list(sapera_cameras) + list(network_cameras)
+        
+        # 线程安全的UI更新
+        try:
+            self.after_idle(lambda: self._safe_update_camera_list(all_cameras))
+        except RuntimeError:
+            import threading
+            if threading.current_thread() is threading.main_thread():
+                self._safe_update_camera_list(all_cameras)
+            else:
+                def delayed_update():
+                    try:
+                        self.after_idle(lambda: self._safe_update_camera_list(all_cameras))
+                    except:
+                        pass
+                threading.Timer(0.1, delayed_update).start()
 
     def _safe_refresh_display(self, state, camera):
         """带销毁检查的 _refresh_display"""
@@ -312,47 +479,92 @@ class CameraStatusBar(tk.Frame):
 
     def _refresh_display(self, state: str, camera):
         """根据状态更新状态灯和信息文本"""
-        CS = self._ConnectionState
-
         # 停止之前的闪烁
         self._stop_blink()
 
-        if state == CS.CONNECTED and camera:
+        if state == "connected" and camera:
             self._set_led(self._COLOR_CONNECTED)
-            self._info_var.set(f"当前相机：{camera.display_name}")
+            
+            # 获取相机显示名称
+            if hasattr(camera, 'formatted_display_name'):
+                display_name = camera.formatted_display_name
+            elif hasattr(camera, 'display_name'):
+                display_name = camera.display_name
+            else:
+                display_name = str(camera)
+            
+            self._info_var.set(f"当前相机：{display_name}")
+            
             # 确保相机在下拉框（扫描原因导致列表空时也能显示）
             vals = list(self._combo["values"])
-            if "无可用相机" in vals: vals.remove("无可用相机")
-            if camera.display_name not in vals: vals.append(camera.display_name)
+            if "无可用相机" in vals: 
+                vals.remove("无可用相机")
+            if display_name not in vals: 
+                vals.append(display_name)
             self._combo["values"] = vals
-            self._combo_var.set(camera.display_name)
+            self._combo_var.set(display_name)
 
-        elif state == CS.CONNECTING:
+        elif state in ("connecting", "scanning"):
             self._start_blink()
-            self._info_var.set("连接中…")
+            if state == "connecting":
+                self._info_var.set("连接中…")
+            else:
+                self._info_var.set("扫描中…")
 
-        elif state == CS.FAILED:
+        elif state == "failed":
             self._set_led(self._COLOR_DISCONNECTED)
             self._info_var.set("连接失败")
 
-        else:  # DISCONNECTED
+        else:  # disconnected
             self._set_led(self._COLOR_DISCONNECTED)
             self._info_var.set("未连接")
 
     def _update_camera_list(self, cameras: list):
-        """扫描完成后更新下拉框（扫描原因导致列表空时自动补入当前相机）"""
+        """扫描完成后更新下拉框"""
         self._camera_list = list(cameras) if cameras else []
-        current = self._manager.current_camera
+        
+        # 获取当前连接的相机
+        current = self._manager.current_camera or self._sapera_manager.current_camera
+        
+        # 如果当前相机不在列表中，添加进去
         if current and current not in self._camera_list:
             self._camera_list.append(current)
+        
         if self._camera_list:
-            names = [c.display_name for c in self._camera_list]
+            # 获取所有相机的显示名称
+            names = []
+            for camera in self._camera_list:
+                if hasattr(camera, 'formatted_display_name'):
+                    names.append(camera.formatted_display_name)
+                elif hasattr(camera, 'display_name'):
+                    names.append(camera.display_name)
+                else:
+                    names.append(str(camera))
+            
             self._combo["values"] = names
-            self._combo_var.set(current.display_name if current and current.display_name in names else names[0])
+            
+            # 设置当前选中项
+            if current:
+                if hasattr(current, 'formatted_display_name'):
+                    current_name = current.formatted_display_name
+                elif hasattr(current, 'display_name'):
+                    current_name = current.display_name
+                else:
+                    current_name = str(current)
+                
+                if current_name in names:
+                    self._combo_var.set(current_name)
+                else:
+                    self._combo_var.set(names[0])
+            else:
+                self._combo_var.set(names[0])
         else:
             self._combo["values"] = ["无可用相机"]
             self._combo_var.set("无可用相机")
-        self._refresh_display(self._manager.state, self._manager.current_camera)
+        
+        # 刷新显示状态
+        current_state = "connected" if current else "disconnected"
+        self._refresh_display(current_state, current)
 
     # ------------------------------------------------------------------
     # 状态灯控制
@@ -392,7 +604,12 @@ class CameraStatusBar(tk.Frame):
         self._camera_list = []
         self._combo["values"] = ["扫描中…"]
         self._combo_var.set("扫描中…")
-        self._manager.start_scan()
+        
+        # 设置扫描状态
+        self._refresh_display("scanning", None)
+        
+        # 启动扫描
+        self._manager.start_scan(force_refresh=True)
 
     def destroy(self):
         """销毁时停止闪烁定时器，标记已销毁"""

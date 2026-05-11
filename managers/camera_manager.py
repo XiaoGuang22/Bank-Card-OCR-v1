@@ -1,17 +1,24 @@
 """
-相机连接管理器（单例）
+增强的相机连接管理器（单例）
 
 负责：
 - 维护当前连接的相机信息
 - 执行手动/自动切换
 - 失败时自动回退到上一次成功的连接
 - 将切换操作写入审计日志
+- 集成Sapera SDK原生发现功能
+- 支持多种相机发现方式
 """
 
 import threading
-from typing import Optional, Callable, TYPE_CHECKING
+import time
+from typing import Optional, Callable, TYPE_CHECKING, List, Union
 
 from camera.camera_discovery import CameraInfo, CameraDiscovery, DEFAULT_CAMERA_PORT
+from camera.sapera_camera_discovery import (
+    SaperaCameraDiscovery, SaperaCameraController, SaperaCameraInfo,
+    get_sapera_discovery, get_sapera_controller
+)
 from managers.audit_log_manager import AuditLogManager
 
 if TYPE_CHECKING:
@@ -26,11 +33,23 @@ class ConnectionState:
     FAILED       = "failed"         # 连接失败
 
 
-class CameraManager:
-    """
-    相机连接管理器（单例）。
+# 相机发现模式
+class DiscoveryMode:
+    SAPERA_ONLY = "sapera_only"     # 仅使用Sapera SDK发现
+    NETWORK_ONLY = "network_only"   # 仅使用网络扫描
+    HYBRID = "hybrid"               # 混合模式（推荐）
 
-    外部通过 CameraManager() 获取同一实例。
+
+class EnhancedCameraManager:
+    """
+    增强的相机连接管理器（单例）。
+
+    支持多种相机发现方式：
+    1. Sapera SDK原生发现（推荐，适用于GigE Vision和Camera Link）
+    2. 传统网络扫描（兼容性，适用于TCP相机服务）
+    3. 混合模式（同时使用两种方式）
+    
+    外部通过 EnhancedCameraManager() 获取同一实例。
     UI 层通过注册回调感知状态变化，无需轮询。
     """
 
@@ -51,29 +70,30 @@ class CameraManager:
 
         self._state_lock = threading.Lock()
 
-        # 当前连接的相机
-        self._current: Optional[CameraInfo] = None
+        # 当前连接的相机（可能是Sapera或网络相机）
+        self._current_camera: Optional[Union[SaperaCameraInfo, CameraInfo]] = None
         # 上一次成功连接的相机（用于失败回退）
-        self._last_successful: Optional[CameraInfo] = None
+        self._last_successful: Optional[Union[SaperaCameraInfo, CameraInfo]] = None
         # 连接状态
         self._state: str = ConnectionState.DISCONNECTED
+        
+        # 发现模式
+        self._discovery_mode = DiscoveryMode.HYBRID
 
         # 扫描器
-        self._discovery = CameraDiscovery()
+        self._network_discovery = CameraDiscovery()
+        self._sapera_discovery = get_sapera_discovery()
+        self._sapera_controller = get_sapera_controller()
 
         # 日志管理器
         self._log = AuditLogManager()
 
-        # 状态变化回调列表：fn(state: str, camera: Optional[CameraInfo])
+        # 状态变化回调列表：fn(state: str, camera: Optional[Union[SaperaCameraInfo, CameraInfo]])
         self._state_callbacks: list = []
-        # 扫描完成回调列表：fn(cameras: list)
+        # 扫描完成回调列表：fn(sapera_cameras: List[SaperaCameraInfo], network_cameras: List[CameraInfo])
         self._scan_callbacks: list = []
 
-        # Sapera 连接/断开回调
-        self._sapera_connector = None
-        self._sapera_disconnector = None
-
-        # Sapera 连接/断开回调
+        # Sapera 连接/断开回调（兼容旧接口）
         self._sapera_connector = None
         self._sapera_disconnector = None
 
@@ -82,8 +102,8 @@ class CameraManager:
     # ------------------------------------------------------------------
 
     @property
-    def current_camera(self) -> Optional[CameraInfo]:
-        return self._current
+    def current_camera(self) -> Optional[Union[SaperaCameraInfo, CameraInfo]]:
+        return self._current_camera
 
     @property
     def state(self) -> str:
@@ -94,85 +114,190 @@ class CameraManager:
         return self._state == ConnectionState.CONNECTED
 
     @property
-    def available_cameras(self):
-        return self._discovery.last_results
+    def available_sapera_cameras(self) -> List[SaperaCameraInfo]:
+        """获取可用的Sapera相机列表"""
+        return self._sapera_discovery.last_results
+
+    @property
+    def available_network_cameras(self) -> List[CameraInfo]:
+        """获取可用的网络相机列表"""
+        return self._network_discovery.last_results
+    
+    @property
+    def all_available_cameras(self) -> List[Union[SaperaCameraInfo, CameraInfo]]:
+        """获取所有可用相机列表"""
+        cameras = []
+        cameras.extend(self._sapera_discovery.last_results)
+        cameras.extend(self._network_discovery.last_results)
+        return cameras
 
     @property
     def is_scanning(self) -> bool:
-        return self._discovery.is_scanning
+        return (self._network_discovery.is_scanning or 
+                self._sapera_discovery.is_scanning)
+    
+    @property
+    def discovery_mode(self) -> str:
+        return self._discovery_mode
+    
+    @property
+    def sapera_available(self) -> bool:
+        """检查Sapera SDK是否可用"""
+        return self._sapera_discovery.is_available
 
     # ------------------------------------------------------------------
-    # 回调注册
+    # 回调注册和配置
     # ------------------------------------------------------------------
 
-    def on_state_change(self, callback: Callable[[str, Optional[CameraInfo]], None]):
+    def on_state_change(self, callback: Callable[[str, Optional[Union[SaperaCameraInfo, CameraInfo]]], None]):
         """注册连接状态变化回调。callback(state, camera_info)"""
         self._state_callbacks.append(callback)
 
-    def on_scan_complete(self, callback: Callable[[list], None]):
-        """注册扫描完成回调。callback(camera_list)"""
+    def on_scan_complete(self, callback: Callable[[List[SaperaCameraInfo], List[CameraInfo]], None]):
+        """注册扫描完成回调。callback(sapera_cameras, network_cameras)"""
         self._scan_callbacks.append(callback)
 
+    def set_discovery_mode(self, mode: str):
+        """
+        设置相机发现模式
+        
+        Args:
+            mode: DiscoveryMode中的一种模式
+        """
+        if mode in [DiscoveryMode.SAPERA_ONLY, DiscoveryMode.NETWORK_ONLY, DiscoveryMode.HYBRID]:
+            self._discovery_mode = mode
+        else:
+            raise ValueError(f"无效的发现模式: {mode}")
+
     def set_sapera_connector(self, connect_fn, disconnect_fn):
-        """注册 Sapera 连接/断开回调"""
+        """注册 Sapera 连接/断开回调（兼容旧接口）"""
         self._sapera_connector = connect_fn
         self._sapera_disconnector = disconnect_fn
 
-    def set_initial_camera(self, camera):
+    def set_initial_camera(self, camera: Union[SaperaCameraInfo, CameraInfo]):
         """设置初始已连接的相机"""
         if self._state == ConnectionState.DISCONNECTED and camera:
-            self._current = camera
+            self._current_camera = camera
             self._last_successful = camera
             self._notify_state(ConnectionState.CONNECTED, camera)
 
-    def set_sapera_connector(self, connect_fn, disconnect_fn):
-        """注册 Sapera 连接/断开回调"""
-        self._sapera_connector = connect_fn
-        self._sapera_disconnector = disconnect_fn
-
-    def set_initial_camera(self, camera):
-        """设置初始已连接的相机"""
-        if self._state == ConnectionState.DISCONNECTED and camera:
-            self._current = camera
-            self._last_successful = camera
-            self._notify_state(ConnectionState.CONNECTED, camera)
-
-    def _notify_state(self, state: str, camera: Optional[CameraInfo]):
+    def _notify_state(self, state: str, camera: Optional[Union[SaperaCameraInfo, CameraInfo]]):
         self._state = state
         for cb in self._state_callbacks:
             try:
                 cb(state, camera)
             except Exception as e:
-                print(f"[CameraManager] 状态回调异常: {e}")
+                print(f"[EnhancedCameraManager] 状态回调异常: {e}")
 
-    def _notify_scan(self, cameras: list):
+    def _notify_scan(self, sapera_cameras: List[SaperaCameraInfo], network_cameras: List[CameraInfo]):
         for cb in self._scan_callbacks:
             try:
-                cb(cameras)
+                cb(sapera_cameras, network_cameras)
             except Exception as e:
-                print(f"[CameraManager] 扫描回调异常: {e}")
+                print(f"[EnhancedCameraManager] 扫描回调异常: {e}")
 
     # ------------------------------------------------------------------
-    # 扫描
+    # 扫描功能
     # ------------------------------------------------------------------
 
-    def start_scan(self, blocking: bool = False):
+    def start_scan(self, blocking: bool = False, force_refresh: bool = False):
         """
-        启动局域网相机扫描。
+        启动相机扫描。
+        根据discovery_mode决定使用哪种扫描方式。
         扫描完成后触发 on_scan_complete 回调。
+        
+        Args:
+            blocking: 是否阻塞执行
+            force_refresh: 是否强制刷新（对Sapera相机检测新服务器）
         """
-        self._notify_state(ConnectionState.CONNECTING, self._current)
-        self._discovery.scan(
-            on_complete=self._on_scan_done,
+        self._notify_state(ConnectionState.CONNECTING, self._current_camera)
+        
+        if self._discovery_mode == DiscoveryMode.SAPERA_ONLY:
+            self._scan_sapera_only(blocking, force_refresh)
+        elif self._discovery_mode == DiscoveryMode.NETWORK_ONLY:
+            self._scan_network_only(blocking)
+        else:  # HYBRID
+            self._scan_hybrid(blocking, force_refresh)
+
+    def _scan_sapera_only(self, blocking: bool, force_refresh: bool):
+        """仅扫描Sapera相机"""
+        def on_complete(sapera_cameras):
+            self._restore_connection_state()
+            self._notify_scan(sapera_cameras, [])
+        
+        self._sapera_discovery.scan(
+            on_complete=on_complete,
             blocking=blocking,
+            detect_new_servers=force_refresh
         )
 
-    def _on_scan_done(self, cameras: list):
-        # 扫描完成后恢复之前的连接状态
-        self._notify_state(self._state if self._state != ConnectionState.CONNECTING
-                           else (ConnectionState.CONNECTED if self._current else ConnectionState.DISCONNECTED),
-                           self._current)
-        self._notify_scan(cameras)
+    def _scan_network_only(self, blocking: bool):
+        """仅扫描网络相机"""
+        def on_complete(network_cameras):
+            self._restore_connection_state()
+            self._notify_scan([], network_cameras)
+        
+        self._network_discovery.scan(
+            on_complete=on_complete,
+            blocking=blocking
+        )
+
+    def _scan_hybrid(self, blocking: bool, force_refresh: bool):
+        """混合扫描（同时扫描Sapera和网络相机）"""
+        results = {'sapera': [], 'network': []}
+        completed = {'sapera': False, 'network': False}
+        lock = threading.Lock()
+        
+        def check_completion():
+            with lock:
+                if completed['sapera'] and completed['network']:
+                    self._restore_connection_state()
+                    self._notify_scan(results['sapera'], results['network'])
+        
+        def on_sapera_complete(sapera_cameras):
+            with lock:
+                results['sapera'] = sapera_cameras
+                completed['sapera'] = True
+            check_completion()
+        
+        def on_network_complete(network_cameras):
+            with lock:
+                results['network'] = network_cameras
+                completed['network'] = True
+            check_completion()
+        
+        # 启动两种扫描
+        self._sapera_discovery.scan(
+            on_complete=on_sapera_complete,
+            blocking=False,  # 混合模式下总是异步
+            detect_new_servers=force_refresh
+        )
+        
+        self._network_discovery.scan(
+            on_complete=on_network_complete,
+            blocking=False
+        )
+        
+        # 如果需要阻塞，等待完成
+        if blocking:
+            while not (completed['sapera'] and completed['network']):
+                time.sleep(0.1)
+
+    def _restore_connection_state(self):
+        """恢复扫描前的连接状态"""
+        if self._state == ConnectionState.CONNECTING:
+            if self._current_camera:
+                self._notify_state(ConnectionState.CONNECTED, self._current_camera)
+            else:
+                self._notify_state(ConnectionState.DISCONNECTED, None)
+
+    def refresh_cameras(self, on_complete: Optional[Callable] = None):
+        """刷新相机列表（强制重新扫描）"""
+        def wrapped_callback(sapera_cameras, network_cameras):
+            if on_complete:
+                on_complete(sapera_cameras, network_cameras)
+        
+        self.start_scan(blocking=False, force_refresh=True)
 
     # ------------------------------------------------------------------
     # 切换相机（手动，管理员/技术员）
