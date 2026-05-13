@@ -1420,11 +1420,12 @@ class InspectMainWindow:
         self.style.configure("White.TLabelframe", background="white")
         self.style.configure("White.TLabelframe.Label", background="white", font=("Microsoft YaHei UI", 9))
         
-        # 初始化相机（先枚举 Sapera 服务器，再连接）
+        # ★★★ 修改：不在初始化时自动连接相机，而是等待扫描完成后再连接 ★★★
         init_sapera_sdk()
         self._enumerate_sapera_servers_before_connect()
         self.cam = CameraController()
-        self.cam.connect()
+        # self.cam.connect()  # ← 注释掉自动连接
+        print("[InspectMainWindow] 相机控制器已创建，等待扫描完成后连接...")
         
         # 资源初始化
         self.icons = {}
@@ -1609,13 +1610,55 @@ class InspectMainWindow:
                 # 新格式：两个参数
                 cameras = list(sapera_cameras) + list(network_cameras)
             
-            # ★★★ 修复：扫描完成后，设置当前连接的相机 ★★★
-            sn = self.cam.current_server_name
-            if sn:
+            print(f"[InspectMainWindow] _on_first_scan: 扫描到 {len(cameras)} 台相机")
+            
+            # ★★★ 新逻辑：扫描完成后，自动连接到第一台可用相机 ★★★
+            if cameras:
+                # 优先连接第一台有完整信息的相机
+                connected = False
                 for cam in cameras:
-                    if getattr(cam, 'server_name', '') == sn:
-                        mgr.set_initial_camera(cam)
-                        break
+                    server_name = getattr(cam, 'server_name', '')
+                    device_info = getattr(cam, 'device_info', {}) or {}
+                    
+                    # 检查相机信息是否完整
+                    has_info = bool(device_info.get('user_id') or device_info.get('model') or device_info.get('ip_address'))
+                    
+                    print(f"[InspectMainWindow] 检查相机: {server_name}")
+                    print(f"  display_name: {getattr(cam, 'formatted_display_name', 'N/A')}")
+                    print(f"  has_info: {has_info}")
+                    
+                    if has_info:
+                        # 尝试连接到这台相机
+                        print(f"[InspectMainWindow] 尝试连接到: {cam.formatted_display_name}")
+                        if self.cam.connect(server_name):
+                            print(f"[InspectMainWindow] ✓ 成功连接到: {cam.formatted_display_name}")
+                            
+                            # 设置为当前相机
+                            mgr.set_initial_camera(cam)
+                            
+                            # 检查 Sapera 管理器状态
+                            from camera.sapera_camera_manager import get_sapera_camera_manager
+                            sapera_mgr = get_sapera_camera_manager()
+                            
+                            # 同步 Sapera 管理器的状态
+                            if not sapera_mgr.is_connected:
+                                sapera_mgr._current_camera = cam
+                                sapera_mgr._last_successful_camera = cam
+                                sapera_mgr._connected = True
+                                print(f"[InspectMainWindow] ✓ 同步 SaperaCameraManager 状态")
+                            
+                            connected = True
+                            break
+                        else:
+                            print(f"[InspectMainWindow] ✗ 连接失败: {cam.formatted_display_name}")
+                    else:
+                        print(f"[InspectMainWindow] ✗ 跳过（信息不完整）: {server_name}")
+                
+                if not connected:
+                    print(f"[InspectMainWindow] ✗ 未能连接到任何相机")
+            else:
+                print(f"[InspectMainWindow] ✗ 未扫描到任何相机")
+            
             if not cameras and mgr.current_camera:
                 for cb in getattr(mgr, '_scan_callbacks', []):
                     if cb is not _on_first_scan:

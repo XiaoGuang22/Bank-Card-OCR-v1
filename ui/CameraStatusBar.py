@@ -199,6 +199,21 @@ class CameraStatusBar(tk.Frame):
 
         # 若目标与当前相同，忽略
         current = self._manager.current_camera or self._sapera_manager.current_camera
+        
+        # 添加调试信息
+        print(f"[CameraStatusBar] 切换相机检查:")
+        print(f"  当前相机: {current}")
+        print(f"  目标相机: {target}")
+        if current:
+            print(f"  当前相机 server_name: {getattr(current, 'server_name', 'N/A')}")
+            print(f"  当前相机 display_name: {getattr(current, 'display_name', 'N/A')}")
+            print(f"  当前相机 formatted_display_name: {getattr(current, 'formatted_display_name', 'N/A')}")
+        if target:
+            print(f"  目标相机 server_name: {getattr(target, 'server_name', 'N/A')}")
+            print(f"  目标相机 display_name: {getattr(target, 'display_name', 'N/A')}")
+            print(f"  目标相机 formatted_display_name: {getattr(target, 'formatted_display_name', 'N/A')}")
+        print(f"  相等性检查: {current == target if current else 'current is None'}")
+        
         if current and current == target:
             messagebox.showinfo("切换相机", "已是当前连接的相机，无需切换", parent=self)
             return
@@ -234,7 +249,7 @@ class CameraStatusBar(tk.Frame):
                 target=target,
                 user_name=self.username,
                 user_role=self.role,
-                on_result=self._on_switch_result,
+                on_result=lambda success, message: self._on_switch_result(success, message, self.role, target),
             )
     
     def _switch_sapera_camera(self, target):
@@ -243,7 +258,7 @@ class CameraStatusBar(tk.Frame):
             success, message = self._sapera_manager.switch_camera(target)
             # 线程安全的回调
             def callback():
-                self._on_switch_result(success, message, self.role)
+                self._on_switch_result(success, message, self.role, target)
             
             try:
                 self.after_idle(callback)
@@ -262,7 +277,7 @@ class CameraStatusBar(tk.Frame):
         except Exception as e:
             # 线程安全的错误回调
             def error_callback():
-                self._on_switch_result(False, f"切换异常: {e}", self.role)
+                self._on_switch_result(False, f"切换异常: {e}", self.role, target)
             
             try:
                 self.after_idle(error_callback)
@@ -309,14 +324,14 @@ class CameraStatusBar(tk.Frame):
         except Exception as e:
             print(f"[CameraStatusBar] 停止检测失败: {e}")
 
-    def _on_switch_result(self, success: bool, message: str, user_role: str = ""):
+    def _on_switch_result(self, success: bool, message: str, user_role: str = "", target_camera=None):
         """切换完成回调（在后台线程中调用，需要线程安全的UI更新）"""
         def _show():
             if self._destroyed:
                 return
             if success:
                 # 切换成功后提示用户确认旧图像，防止误用
-                self._notify_stale_image()
+                self._notify_stale_image(target_camera)
             else:
                 messagebox.showerror(
                     "切换相机失败",
@@ -342,10 +357,13 @@ class CameraStatusBar(tk.Frame):
                         pass
                 threading.Timer(0.1, delayed_update).start()
 
-    def _notify_stale_image(self):
+    def _notify_stale_image(self, target_camera=None):
         """
         FC-17：相机切换成功后，清除主窗口当前显示的旧图像，
         并提示用户重新拍照或确认。
+        
+        Args:
+            target_camera: 目标相机对象，如果提供则使用该相机的名称，否则从manager获取
         """
         try:
             root = self.winfo_toplevel()
@@ -358,16 +376,26 @@ class CameraStatusBar(tk.Frame):
             if run_interface and hasattr(run_interface, 'clear_current_frame'):
                 run_interface.clear_current_frame()
 
-            # 获取当前相机名称
-            current_camera = self._manager.current_camera or self._sapera_manager.current_camera
+            # 获取相机名称：优先使用传入的目标相机，否则从manager获取当前相机
             camera_name = "新相机"
-            if current_camera:
-                if hasattr(current_camera, 'formatted_display_name'):
-                    camera_name = current_camera.formatted_display_name
-                elif hasattr(current_camera, 'display_name'):
-                    camera_name = current_camera.display_name
+            if target_camera:
+                # 使用传入的目标相机
+                if hasattr(target_camera, 'formatted_display_name'):
+                    camera_name = target_camera.formatted_display_name
+                elif hasattr(target_camera, 'display_name'):
+                    camera_name = target_camera.display_name
                 else:
-                    camera_name = str(current_camera)
+                    camera_name = str(target_camera)
+            else:
+                # 从manager获取当前相机（兼容旧代码）
+                current_camera = self._manager.current_camera or self._sapera_manager.current_camera
+                if current_camera:
+                    if hasattr(current_camera, 'formatted_display_name'):
+                        camera_name = current_camera.formatted_display_name
+                    elif hasattr(current_camera, 'display_name'):
+                        camera_name = current_camera.display_name
+                    else:
+                        camera_name = str(current_camera)
 
             # 弹出提示（非阻塞）
             messagebox.showinfo(

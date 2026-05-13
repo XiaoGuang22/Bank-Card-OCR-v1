@@ -344,6 +344,16 @@ class SaperaCameraManager:
             return False, "Sapera SDK 不可用"
         
         # 检查是否为同一相机
+        print(f"[SaperaCameraManager] switch_camera 检查:")
+        print(f"  当前相机: {self._current_camera}")
+        print(f"  目标相机: {target_camera}")
+        if self._current_camera:
+            print(f"  当前相机 server_name: {self._current_camera.server_name}")
+            print(f"  当前相机 formatted_display_name: {self._current_camera.formatted_display_name}")
+        print(f"  目标相机 server_name: {target_camera.server_name}")
+        print(f"  目标相机 formatted_display_name: {target_camera.formatted_display_name}")
+        print(f"  相等性检查: {self._current_camera == target_camera if self._current_camera else 'current is None'}")
+        
         if self._current_camera and self._current_camera == target_camera:
             return True, "已是当前相机，无需切换"
         
