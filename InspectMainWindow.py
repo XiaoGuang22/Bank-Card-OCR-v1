@@ -334,17 +334,18 @@ class CameraController:
     def switch_to(self, server_name):
         """切换到指定相机"""
         with self._switch_lock:
+            #  如果是同一相机且已连接，直接返回 True
             if server_name == self._current_server_name and self.acq_device is not None:
                 return True
-            self.disconnect()
-            self._current_server_name = server_name
-            if self.connect(server_name):
-                self._last_connected_name = server_name
+            self.disconnect()       # # 停止采集 + 销毁 xfer/buffers/acq_device
+            self._current_server_name = server_name  # 更新当前服务器名称  
+            if self.connect(server_name):            # 连接相机
+                self._last_connected_name = server_name         
                 return True
             return False
 
     @property
-    def current_server_name(self):
+    def current_server_name(self):          # 获取当前连接的服务器名称
         return self._current_server_name
 
     @ErrorHandler.handle_camera_error
@@ -358,7 +359,7 @@ class CameraController:
             return False
         
         # 3. 创建缓冲区（标准配置）
-        if not self._create_buffers():
+        if not self._create_buffers():          # 创建缓冲区
             return False
         
         # 4. 创建传输对象并启动采集（先绑定回调）
