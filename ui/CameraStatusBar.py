@@ -470,24 +470,22 @@ class CameraStatusBar(tk.Frame):
                         pass
                 threading.Timer(0.1, delayed_update).start()
 
-    def _on_scan_complete(self, sapera_cameras: list, network_cameras: list):
+    def _on_scan_complete(self, sapera_cameras: list):
         """扫描完成回调（来自 EnhancedCameraManager）"""
         if self._destroyed:
             return
-        # 合并两种类型的相机
-        all_cameras = list(sapera_cameras) + list(network_cameras)
         
         # 线程安全的UI更新
         try:
-            self.after_idle(lambda: self._safe_update_camera_list(all_cameras))
+            self.after_idle(lambda: self._safe_update_camera_list(sapera_cameras))
         except RuntimeError:
             import threading
             if threading.current_thread() is threading.main_thread():
-                self._safe_update_camera_list(all_cameras)
+                self._safe_update_camera_list(sapera_cameras)
             else:
                 def delayed_update():
                     try:
-                        self.after_idle(lambda: self._safe_update_camera_list(all_cameras))
+                        self.after_idle(lambda: self._safe_update_camera_list(sapera_cameras))
                     except:
                         pass
                 threading.Timer(0.1, delayed_update).start()
@@ -636,36 +634,23 @@ class CameraStatusBar(tk.Frame):
             self._refresh_display("disconnected", None)
     
     def _get_camera_key(self, camera) -> str:
-        """
-        获取相机的唯一标识键
-        
-        优先使用 server_name（Sapera相机），其次使用 IP+端口（网络相机）
-        """
+        """获取相机的唯一标识键（基于 Sapera server_name 去重）"""
         if hasattr(camera, 'server_name') and camera.server_name:
-            return f"sapera:{camera.server_name}"
-        elif hasattr(camera, 'ip') and camera.ip:
-            port = getattr(camera, 'port', 5024)
-            return f"network:{camera.ip}:{port}"
+            return camera.server_name
         return None
     
     def _is_camera_more_complete(self, new_camera, existing_camera) -> bool:
         """
-        判断新相机信息是否比现有相机更完整
-        
-        主要比较是否有IP地址信息
+        判断新扫描的相机信息是否比已缓存的更完整。
+        当同一台相机在两次扫描中返回不同完整度的信息时（例如首次扫描未取到IP，
+        再次刷新后取到了），用信息更完整的版本替换旧版本。
         """
-        # 对于 Sapera 相机，检查 device_info 中的 ip_address
         if hasattr(new_camera, 'device_info') and hasattr(existing_camera, 'device_info'):
             new_ip = (new_camera.device_info or {}).get('ip_address', '').strip()
             existing_ip = (existing_camera.device_info or {}).get('ip_address', '').strip()
-            
-            # 如果新相机有IP而旧相机没有，新相机更完整
             if new_ip and not existing_ip:
                 return True
-            # 如果两者都有IP或都没有IP，保持现有的
             return False
-        
-        # 对于网络相机，默认保持现有的
         return False
     
     def _get_camera_display_name(self, camera) -> str:
