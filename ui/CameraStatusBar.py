@@ -197,8 +197,15 @@ class CameraStatusBar(tk.Frame):
             messagebox.showwarning("切换相机", "未找到所选相机信息", parent=self)
             return
 
-        # 若目标与当前相同，忽略
-        current = self._manager.current_camera or self._sapera_manager.current_camera
+        # ★★★ 修复：根据目标相机类型选择正确的管理器 ★★★
+        # 判断目标是 Sapera 相机还是网络相机
+        is_sapera_target = hasattr(target, 'server_name') and target.server_name
+        
+        # 获取当前相机（从正确的管理器）
+        if is_sapera_target:
+            current = self._sapera_manager.current_camera
+        else:
+            current = self._manager.current_camera
         
         # 添加调试信息
         print(f"[CameraStatusBar] 切换相机检查:")

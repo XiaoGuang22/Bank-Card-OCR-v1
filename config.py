@@ -202,3 +202,67 @@ TCP_SETTINGS = {
     'port': 5024,
     'auto_start': False,
 }
+
+# ==============================================================================
+# 相机连接历史配置
+# ==============================================================================
+
+# 上次连接的相机配置文件路径
+LAST_CAMERA_CONFIG_FILE = os.path.join(PROJECT_ROOT, 'Logs', 'last_camera.json')
+
+def save_last_connected_camera(camera_info):
+    """
+    保存上次连接的相机信息
+    
+    Args:
+        camera_info: SaperaCameraInfo 或 CameraInfo 对象
+    """
+    import json
+    
+    # 确保 Logs 目录存在
+    logs_dir = os.path.join(PROJECT_ROOT, 'Logs')
+    if not os.path.exists(logs_dir):
+        os.makedirs(logs_dir)
+    
+    # 提取相机信息
+    camera_data = {
+        'server_name': getattr(camera_info, 'server_name', ''),
+        'display_name': getattr(camera_info, 'display_name', ''),
+        'ip_address': '',
+        'camera_type': 'sapera' if hasattr(camera_info, 'server_name') and camera_info.server_name else 'network'
+    }
+    
+    # 获取 IP 地址
+    if hasattr(camera_info, 'device_info') and camera_info.device_info:
+        camera_data['ip_address'] = camera_info.device_info.get('ip_address', '')
+    elif hasattr(camera_info, 'ip'):
+        camera_data['ip_address'] = camera_info.ip
+    
+    try:
+        with open(LAST_CAMERA_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(camera_data, f, indent=2, ensure_ascii=False)
+        print(f"[Config] 已保存上次连接的相机: {camera_data['display_name']} ({camera_data['server_name']})")
+    except Exception as e:
+        print(f"[Config] 保存上次连接的相机失败: {e}")
+
+def load_last_connected_camera():
+    """
+    读取上次连接的相机信息
+    
+    Returns:
+        dict: 包含 server_name, display_name, ip_address, camera_type 的字典
+        None: 如果没有保存的记录或读取失败
+    """
+    import json
+    
+    if not os.path.exists(LAST_CAMERA_CONFIG_FILE):
+        return None
+    
+    try:
+        with open(LAST_CAMERA_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            camera_data = json.load(f)
+        print(f"[Config] 读取上次连接的相机: {camera_data.get('display_name', 'N/A')} ({camera_data.get('server_name', 'N/A')})")
+        return camera_data
+    except Exception as e:
+        print(f"[Config] 读取上次连接的相机失败: {e}")
+        return None

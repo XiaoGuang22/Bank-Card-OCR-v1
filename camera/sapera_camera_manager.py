@@ -372,6 +372,10 @@ class SaperaCameraManager:
                 self._last_successful_camera = target_camera
                 self._connected = True
                 
+                # ★★★ 保存上次连接的相机信息 ★★★
+                from config import save_last_connected_camera
+                save_last_connected_camera(target_camera)
+                
                 from camera.camera_info_model import CameraConnectionStatus
                 self._notify_state_change(CameraConnectionStatus.CONNECTED, target_camera)
                 

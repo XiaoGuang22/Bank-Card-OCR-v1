@@ -1612,47 +1612,110 @@ class InspectMainWindow:
             
             print(f"[InspectMainWindow] _on_first_scan: 扫描到 {len(cameras)} 台相机")
             
-            # ★★★ 新逻辑：扫描完成后，自动连接到第一台可用相机 ★★★
+            # ★★★ 新逻辑：优先连接上次使用的相机 ★★★
             if cameras:
-                # 优先连接第一台有完整信息的相机
+                # 读取上次连接的相机信息
+                from config import load_last_connected_camera
+                last_camera_data = load_last_connected_camera()
+                
+                # 优先尝试连接上次的相机
                 connected = False
-                for cam in cameras:
-                    server_name = getattr(cam, 'server_name', '')
-                    device_info = getattr(cam, 'device_info', {}) or {}
+                last_camera = None
+                
+                if last_camera_data:
+                    last_server_name = last_camera_data.get('server_name', '')
+                    print(f"[InspectMainWindow] 尝试优先连接上次的相机: {last_server_name}")
                     
-                    # 检查相机信息是否完整
-                    has_info = bool(device_info.get('user_id') or device_info.get('model') or device_info.get('ip_address'))
-                    
-                    print(f"[InspectMainWindow] 检查相机: {server_name}")
-                    print(f"  display_name: {getattr(cam, 'formatted_display_name', 'N/A')}")
-                    print(f"  has_info: {has_info}")
-                    
-                    if has_info:
-                        # 尝试连接到这台相机
-                        print(f"[InspectMainWindow] 尝试连接到: {cam.formatted_display_name}")
-                        if self.cam.connect(server_name):
-                            print(f"[InspectMainWindow] ✓ 成功连接到: {cam.formatted_display_name}")
-                            
-                            # 设置为当前相机
-                            mgr.set_initial_camera(cam)
-                            
-                            # 检查 Sapera 管理器状态
-                            from camera.sapera_camera_manager import get_sapera_camera_manager
-                            sapera_mgr = get_sapera_camera_manager()
-                            
-                            # 同步 Sapera 管理器的状态
-                            if not sapera_mgr.is_connected:
-                                sapera_mgr._current_camera = cam
-                                sapera_mgr._last_successful_camera = cam
-                                sapera_mgr._connected = True
-                                print(f"[InspectMainWindow] ✓ 同步 SaperaCameraManager 状态")
-                            
-                            connected = True
+                    # 在扫描结果中查找上次的相机
+                    for cam in cameras:
+                        server_name = getattr(cam, 'server_name', '')
+                        if server_name == last_server_name:
+                            last_camera = cam
                             break
+                    
+                    # 如果找到了上次的相机，尝试连接
+                    if last_camera:
+                        server_name = getattr(last_camera, 'server_name', '')
+                        device_info = getattr(last_camera, 'device_info', {}) or {}
+                        has_info = bool(device_info.get('user_id') or device_info.get('model') or device_info.get('ip_address'))
+                        
+                        print(f"[InspectMainWindow] 找到上次的相机: {last_camera.formatted_display_name}")
+                        print(f"  has_info: {has_info}")
+                        
+                        if has_info:
+                            print(f"[InspectMainWindow] 尝试连接到上次的相机: {last_camera.formatted_display_name}")
+                            if self.cam.connect(server_name):
+                                print(f"[InspectMainWindow] ✓ 成功连接到上次的相机: {last_camera.formatted_display_name}")
+                                
+                                # 设置为当前相机
+                                mgr.set_initial_camera(last_camera)
+                                
+                                # 同步 Sapera 管理器的状态
+                                from camera.sapera_camera_manager import get_sapera_camera_manager
+                                sapera_mgr = get_sapera_camera_manager()
+                                
+                                if not sapera_mgr.is_connected:
+                                    sapera_mgr._current_camera = last_camera
+                                    sapera_mgr._last_successful_camera = last_camera
+                                    sapera_mgr._connected = True
+                                    print(f"[InspectMainWindow] ✓ 同步 SaperaCameraManager 状态")
+                                
+                                # ★★★ 保存连接成功的相机（确认上次的配置仍然有效）★★★
+                                from config import save_last_connected_camera
+                                save_last_connected_camera(last_camera)
+                                
+                                connected = True
+                            else:
+                                print(f"[InspectMainWindow] ✗ 连接上次的相机失败: {last_camera.formatted_display_name}")
                         else:
-                            print(f"[InspectMainWindow] ✗ 连接失败: {cam.formatted_display_name}")
+                            print(f"[InspectMainWindow] ✗ 上次的相机信息不完整: {server_name}")
                     else:
-                        print(f"[InspectMainWindow] ✗ 跳过（信息不完整）: {server_name}")
+                        print(f"[InspectMainWindow] ✗ 未找到上次的相机: {last_server_name}")
+                
+                # 如果上次的相机连接失败或不存在，连接第一台可用相机
+                if not connected:
+                    print(f"[InspectMainWindow] 尝试连接第一台可用相机")
+                    for cam in cameras:
+                        server_name = getattr(cam, 'server_name', '')
+                        device_info = getattr(cam, 'device_info', {}) or {}
+                        
+                        # 检查相机信息是否完整
+                        has_info = bool(device_info.get('user_id') or device_info.get('model') or device_info.get('ip_address'))
+                        
+                        print(f"[InspectMainWindow] 检查相机: {server_name}")
+                        print(f"  display_name: {getattr(cam, 'formatted_display_name', 'N/A')}")
+                        print(f"  has_info: {has_info}")
+                        
+                        if has_info:
+                            # 尝试连接到这台相机
+                            print(f"[InspectMainWindow] 尝试连接到: {cam.formatted_display_name}")
+                            if self.cam.connect(server_name):
+                                print(f"[InspectMainWindow] ✓ 成功连接到: {cam.formatted_display_name}")
+                                
+                                # 设置为当前相机
+                                mgr.set_initial_camera(cam)
+                                
+                                # 检查 Sapera 管理器状态
+                                from camera.sapera_camera_manager import get_sapera_camera_manager
+                                sapera_mgr = get_sapera_camera_manager()
+                                
+                                # 同步 Sapera 管理器的状态
+                                if not sapera_mgr.is_connected:
+                                    sapera_mgr._current_camera = cam
+                                    sapera_mgr._last_successful_camera = cam
+                                    sapera_mgr._connected = True
+                                    print(f"[InspectMainWindow] ✓ 同步 SaperaCameraManager 状态")
+                                
+                                # ★★★ 保存连接成功的相机 ★★★
+                                from config import save_last_connected_camera
+                                save_last_connected_camera(cam)
+                                
+                                connected = True
+                                break
+                            else:
+                                print(f"[InspectMainWindow] ✗ 连接失败: {cam.formatted_display_name}")
+                        else:
+                            print(f"[InspectMainWindow] ✗ 跳过（信息不完整）: {server_name}")
                 
                 if not connected:
                     print(f"[InspectMainWindow] ✗ 未能连接到任何相机")
