@@ -179,21 +179,21 @@ class CameraStatusBar(tk.Frame):
 
     def _on_switch_click(self):
         """点击切换连接按钮"""
-        selected = self._combo_var.get()
+        selected = self._combo_var.get()            # 获取当前选中的相机名称
         if not selected or selected in ("无可用相机", "扫描中…"):
             messagebox.showwarning("切换相机", "请先选择一台可用相机", parent=self)
             return
 
         # 找到对应的相机信息
         target = None
-        for camera in self._camera_list:
+        for camera in self._camera_list:        # 遍历所有相机
             # 支持 Sapera 相机和网络相机的显示名称匹配
-            display_name = getattr(camera, 'formatted_display_name', None) or getattr(camera, 'display_name', str(camera))
-            if display_name == selected:
-                target = camera
+            display_name = getattr(camera, 'formatted_display_name', None) or getattr(camera, 'display_name', str(camera))  # 优先使用格式化显示名称
+            if display_name == selected:        # 匹配成功名称
+                target = camera                  # 记录目标相机信息
                 break
         
-        if target is None:
+        if target is None:                       # 未找到匹配相机
             messagebox.showwarning("切换相机", "未找到所选相机信息", parent=self)
             return
 
@@ -245,7 +245,7 @@ class CameraStatusBar(tk.Frame):
         # 判断是 Sapera 相机还是网络相机
         if hasattr(target, 'server_name') and target.server_name:
             # Sapera 相机切换
-            threading.Thread(
+            threading.Thread(            # 后台线程执行切换
                 target=self._switch_sapera_camera,
                 args=(target,),
                 daemon=True
@@ -264,7 +264,7 @@ class CameraStatusBar(tk.Frame):
         try:
             success, message = self._sapera_manager.switch_camera(target)
             # 线程安全的回调
-            def callback():
+            def callback():              # 切换结果回调
                 self._on_switch_result(success, message, self.role, target)
             
             try:
@@ -283,11 +283,11 @@ class CameraStatusBar(tk.Frame):
                     
         except Exception as e:
             # 线程安全的错误回调
-            def error_callback():
+            def error_callback():            # 切换异常回调
                 self._on_switch_result(False, f"切换异常: {e}", self.role, target)
             
             try:
-                self.after_idle(error_callback)
+                self.after_idle(error_callback)          # 切换异常回调
             except RuntimeError:
                 import threading
                 if threading.current_thread() is threading.main_thread():
@@ -305,14 +305,14 @@ class CameraStatusBar(tk.Frame):
         try:
             # 通过 winfo_toplevel 找到主窗口，再访问 run_interface
             root = self.winfo_toplevel()
-            run_interface = getattr(root, '_app_run_interface', None)
+            run_interface = getattr(root, '_app_run_interface', None)            # 从主窗口获取 run_interface
             if run_interface is None:
                 # 尝试从主窗口实例获取
                 app = getattr(root, '_app_instance', None)
-                if app:
+                if app:                              # 检查主窗口实例是否存在
                     run_interface = getattr(app, 'run_interface', None)
             if run_interface and hasattr(run_interface, 'is_running'):
-                return bool(run_interface.is_running)
+                return bool(run_interface.is_running)                    # 检查检测是否正在运行
         except Exception:
             pass
         return False
@@ -320,11 +320,11 @@ class CameraStatusBar(tk.Frame):
     def _stop_detection(self):
         """停止当前检测"""
         try:
-            root = self.winfo_toplevel()
-            run_interface = getattr(root, '_app_run_interface', None)
+            root = self.winfo_toplevel()            # 获取主窗口
+            run_interface = getattr(root, '_app_run_interface', None)            # 从主窗口获取 run_interface       
             if run_interface is None:
                 app = getattr(root, '_app_instance', None)
-                if app:
+                if app:                              # 检查主窗口实例是否存在
                     run_interface = getattr(app, 'run_interface', None)
             if run_interface and hasattr(run_interface, 'stop_inspection'):
                 run_interface.stop_inspection()
@@ -353,18 +353,20 @@ class CameraStatusBar(tk.Frame):
         try:
             self.after_idle(_show)
         except RuntimeError:
-            import threading
-            if threading.current_thread() is threading.main_thread():
-                _show()
+            import threading             # 导入线程模块
+            if threading.current_thread() is threading.main_thread():    # 检查是否在主线程
+                # 直接更新UI
+                self.update_idletasks()
+                _show()                              # 更新UI
             else:
                 def delayed_update():
                     try:
-                        self.after_idle(_show)
+                        self.after_idle(_show)               # 延迟更新UI
                     except:
                         pass
-                threading.Timer(0.1, delayed_update).start()
+                threading.Timer(0.1, delayed_update).start()    # 延迟更新UI    
 
-    def _notify_stale_image(self, target_camera=None):
+    def _notify_stale_image(self, target_camera=None):  
         """
         FC-17：相机切换成功后，清除主窗口当前显示的旧图像，
         并提示用户重新拍照或确认。
@@ -373,14 +375,14 @@ class CameraStatusBar(tk.Frame):
             target_camera: 目标相机对象，如果提供则使用该相机的名称，否则从manager获取
         """
         try:
-            root = self.winfo_toplevel()
-            app = getattr(root, '_app_instance', None)
+            root = self.winfo_toplevel()            # 获取主窗口    
+            app = getattr(root, '_app_instance', None)            # 获取主窗口实例
 
             # 尝试清除运行界面的当前帧，避免误用旧图像
             run_interface = getattr(root, '_app_run_interface', None)
-            if run_interface is None and app:
-                run_interface = getattr(app, 'run_interface', None)
-            if run_interface and hasattr(run_interface, 'clear_current_frame'):
+            if run_interface is None and app:                        # 检查主窗口实例是否存在
+                run_interface = getattr(app, 'run_interface', None)            # 从主窗口实例获取 run_interface
+            if run_interface and hasattr(run_interface, 'clear_current_frame'):    # 检查 run_interface 是否存在 clear_current_frame 方法       
                 run_interface.clear_current_frame()
 
             # 获取相机名称：优先使用传入的目标相机，否则从manager获取当前相机
@@ -468,24 +470,22 @@ class CameraStatusBar(tk.Frame):
                         pass
                 threading.Timer(0.1, delayed_update).start()
 
-    def _on_scan_complete(self, sapera_cameras: list, network_cameras: list):
+    def _on_scan_complete(self, sapera_cameras: list):
         """扫描完成回调（来自 EnhancedCameraManager）"""
         if self._destroyed:
             return
-        # 合并两种类型的相机
-        all_cameras = list(sapera_cameras) + list(network_cameras)
         
         # 线程安全的UI更新
         try:
-            self.after_idle(lambda: self._safe_update_camera_list(all_cameras))
+            self.after_idle(lambda: self._safe_update_camera_list(sapera_cameras))
         except RuntimeError:
             import threading
             if threading.current_thread() is threading.main_thread():
-                self._safe_update_camera_list(all_cameras)
+                self._safe_update_camera_list(sapera_cameras)
             else:
                 def delayed_update():
                     try:
-                        self.after_idle(lambda: self._safe_update_camera_list(all_cameras))
+                        self.after_idle(lambda: self._safe_update_camera_list(sapera_cameras))
                     except:
                         pass
                 threading.Timer(0.1, delayed_update).start()
@@ -590,8 +590,8 @@ class CameraStatusBar(tk.Frame):
         # 构建显示名称列表（已经去重）
         if self._camera_list:
             names = []
-            for camera in self._camera_list:
-                name = self._get_camera_display_name(camera)
+            for camera in self._camera_list:            # 遍历扫描结果中的相机
+                name = self._get_camera_display_name(camera)     # 获取相机的显示名称
                 names.append(name)
             
             # 完整替换列表
@@ -615,10 +615,10 @@ class CameraStatusBar(tk.Frame):
         
         # 更新状态灯和文字
         # ★★★ 如果扫描结果为空，设置为断开状态 ★★★
-        if self._camera_list:
+        if self._camera_list:            
             # ★★★ 优先使用扫描结果中的相机信息，而不是当前连接的相机 ★★★
             # 因为当前连接的相机可能是旧的，扫描结果才是最新的
-            if current and current in self._camera_list:
+            if current and current in self._camera_list:            
                 # 当前相机在扫描结果中，使用当前相机
                 display_camera = current
             elif self._camera_list:
@@ -626,7 +626,7 @@ class CameraStatusBar(tk.Frame):
                 display_camera = self._camera_list[0]
             else:
                 display_camera = current
-            
+            # 更新状态灯和文字
             current_state = "connected" if display_camera else "disconnected"
             self._refresh_display(current_state, display_camera)
         else:
@@ -634,36 +634,23 @@ class CameraStatusBar(tk.Frame):
             self._refresh_display("disconnected", None)
     
     def _get_camera_key(self, camera) -> str:
-        """
-        获取相机的唯一标识键
-        
-        优先使用 server_name（Sapera相机），其次使用 IP+端口（网络相机）
-        """
+        """获取相机的唯一标识键（基于 Sapera server_name 去重）"""
         if hasattr(camera, 'server_name') and camera.server_name:
-            return f"sapera:{camera.server_name}"
-        elif hasattr(camera, 'ip') and camera.ip:
-            port = getattr(camera, 'port', 5024)
-            return f"network:{camera.ip}:{port}"
+            return camera.server_name
         return None
     
     def _is_camera_more_complete(self, new_camera, existing_camera) -> bool:
         """
-        判断新相机信息是否比现有相机更完整
-        
-        主要比较是否有IP地址信息
+        判断新扫描的相机信息是否比已缓存的更完整。
+        当同一台相机在两次扫描中返回不同完整度的信息时（例如首次扫描未取到IP，
+        再次刷新后取到了），用信息更完整的版本替换旧版本。
         """
-        # 对于 Sapera 相机，检查 device_info 中的 ip_address
         if hasattr(new_camera, 'device_info') and hasattr(existing_camera, 'device_info'):
             new_ip = (new_camera.device_info or {}).get('ip_address', '').strip()
             existing_ip = (existing_camera.device_info or {}).get('ip_address', '').strip()
-            
-            # 如果新相机有IP而旧相机没有，新相机更完整
             if new_ip and not existing_ip:
                 return True
-            # 如果两者都有IP或都没有IP，保持现有的
             return False
-        
-        # 对于网络相机，默认保持现有的
         return False
     
     def _get_camera_display_name(self, camera) -> str:

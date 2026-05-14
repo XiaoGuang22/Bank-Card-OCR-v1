@@ -334,17 +334,18 @@ class CameraController:
     def switch_to(self, server_name):
         """切换到指定相机"""
         with self._switch_lock:
+            #  如果是同一相机且已连接，直接返回 True
             if server_name == self._current_server_name and self.acq_device is not None:
                 return True
-            self.disconnect()
-            self._current_server_name = server_name
-            if self.connect(server_name):
-                self._last_connected_name = server_name
+            self.disconnect()       # # 停止采集 + 销毁 xfer/buffers/acq_device
+            self._current_server_name = server_name  # 更新当前服务器名称  
+            if self.connect(server_name):            # 连接相机
+                self._last_connected_name = server_name         
                 return True
             return False
 
     @property
-    def current_server_name(self):
+    def current_server_name(self):          # 获取当前连接的服务器名称
         return self._current_server_name
 
     @ErrorHandler.handle_camera_error
@@ -358,7 +359,7 @@ class CameraController:
             return False
         
         # 3. 创建缓冲区（标准配置）
-        if not self._create_buffers():
+        if not self._create_buffers():          # 创建缓冲区
             return False
         
         # 4. 创建传输对象并启动采集（先绑定回调）
@@ -1601,19 +1602,12 @@ class InspectMainWindow:
             # )
             # mgr.set_initial_camera(cam_info)
 
-        def _on_first_scan(sapera_cameras, network_cameras=None):
-            # 兼容新的回调格式，合并两种类型的相机
-            if network_cameras is None:
-                # 旧格式：只有一个参数
-                cameras = sapera_cameras
-            else:
-                # 新格式：两个参数
-                cameras = list(sapera_cameras) + list(network_cameras)
+        def _on_first_scan(sapera_cameras):
             
-            print(f"[InspectMainWindow] _on_first_scan: 扫描到 {len(cameras)} 台相机")
-            
-            # ★★★ 新逻辑：优先连接上次使用的相机 ★★★
-            if cameras:
+            print(f"[InspectMainWindow] _on_first_scan: 扫描到 {len(sapera_cameras)} 台相机")
+
+            # 优先连接上次使用的相机
+            if sapera_cameras:
                 # 读取上次连接的相机信息
                 from config import load_last_connected_camera
                 last_camera_data = load_last_connected_camera()
@@ -1627,7 +1621,7 @@ class InspectMainWindow:
                     print(f"[InspectMainWindow] 尝试优先连接上次的相机: {last_server_name}")
                     
                     # 在扫描结果中查找上次的相机
-                    for cam in cameras:
+                    for cam in sapera_cameras:
                         server_name = getattr(cam, 'server_name', '')
                         if server_name == last_server_name:
                             last_camera = cam
@@ -1675,10 +1669,10 @@ class InspectMainWindow:
                 # 如果上次的相机连接失败或不存在，连接第一台可用相机
                 if not connected:
                     print(f"[InspectMainWindow] 尝试连接第一台可用相机")
-                    for cam in cameras:
+                    for cam in sapera_cameras:
                         server_name = getattr(cam, 'server_name', '')
                         device_info = getattr(cam, 'device_info', {}) or {}
-                        
+
                         # 检查相机信息是否完整
                         has_info = bool(device_info.get('user_id') or device_info.get('model') or device_info.get('ip_address'))
                         
@@ -1722,7 +1716,7 @@ class InspectMainWindow:
             else:
                 print(f"[InspectMainWindow] ✗ 未扫描到任何相机")
             
-            if not cameras and mgr.current_camera:
+            if not sapera_cameras and mgr.current_camera:
                 for cb in getattr(mgr, '_scan_callbacks', []):
                     if cb is not _on_first_scan:
                         try: cb([mgr.current_camera])
