@@ -152,6 +152,8 @@ class SaperaCameraDiscovery:
         self._lock = threading.Lock()
         self._last_results: List[SaperaCameraInfo] = []
         self._event_registered = False
+        # ★★★ 新增：缓存已获取的设备信息，避免重复创建设备 ★★★
+        self._device_info_cache: Dict[str, Dict] = {}
         
     @property
     def is_scanning(self) -> bool:
@@ -258,8 +260,8 @@ class SaperaCameraDiscovery:
                             print(f"获取资源数量失败: {e1}, {e2}")
                             resource_count = 1  # 默认为1
                     
-                    # 先获取设备详细信息
-                    device_info = self._get_device_info(server_name, i)
+                    # 先获取设备详细信息（优先使用缓存）
+                    device_info = self._get_device_info_cached(server_name, i)
                     
                     # 然后根据设备信息和配置计算显示名称
                     config_display_name = CAMERA_DISPLAY_NAMES.get(server_name, "")
@@ -396,6 +398,57 @@ class SaperaCameraDiscovery:
             
         except Exception as e:
             print(f"检测新服务器失败: {e}")
+    
+    def _get_device_info_cached(self, server_name: str, server_index: int) -> Dict:
+        """
+        获取设备详细信息（带缓存）
+        
+        优先使用缓存的设备信息，避免在相机已被占用时重复创建设备
+        """
+        # 如果缓存中有信息，直接返回
+        if server_name in self._device_info_cache:
+            cached_info = self._device_info_cache[server_name]
+            # 验证缓存的IP地址是否仍然有效（通过ping）
+            ip_address = cached_info.get('ip_address', '').strip()
+            if ip_address and self._verify_ip_reachable(ip_address):
+                print(f"[Sapera] 使用缓存的设备信息: {server_name}")
+                return cached_info
+            else:
+                # IP不可达，清除缓存
+                print(f"[Sapera] 缓存的IP不可达，清除缓存: {server_name}")
+                del self._device_info_cache[server_name]
+        
+        # 尝试获取新的设备信息
+        device_info = self._get_device_info(server_name, server_index)
+        
+        # 如果成功获取到信息，缓存起来
+        if device_info and device_info.get('ip_address'):
+            self._device_info_cache[server_name] = device_info
+        
+        return device_info
+    
+    def _verify_ip_reachable(self, ip_address: str, timeout_ms: int = 500) -> bool:
+        """
+        验证IP地址是否可达（通过ping）
+        
+        Args:
+            ip_address: IP地址
+            timeout_ms: 超时时间（毫秒）
+        
+        Returns:
+            bool: IP是否可达
+        """
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['ping', '-n', '1', '-w', str(timeout_ms), ip_address],
+                capture_output=True,
+                text=True,
+                timeout=timeout_ms / 1000.0 + 0.5
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
     
     def _get_device_info(self, server_name: str, server_index: int) -> Dict:
         """
@@ -617,6 +670,21 @@ class SaperaCameraDiscovery:
     def refresh(self, on_complete: Optional[Callable] = None):
         """刷新相机列表（强制重新扫描）"""
         self.scan(on_complete=on_complete, detect_new_servers=True)
+    
+    def clear_device_cache(self, server_name: Optional[str] = None):
+        """
+        清除设备信息缓存
+        
+        Args:
+            server_name: 要清除的服务器名称，如果为None则清除所有缓存
+        """
+        if server_name:
+            if server_name in self._device_info_cache:
+                del self._device_info_cache[server_name]
+                print(f"[Sapera] 已清除设备缓存: {server_name}")
+        else:
+            self._device_info_cache.clear()
+            print(f"[Sapera] 已清除所有设备缓存")
 
 
 class SaperaCameraController:
