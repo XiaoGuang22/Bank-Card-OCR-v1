@@ -401,54 +401,32 @@ class SaperaCameraDiscovery:
     
     def _get_device_info_cached(self, server_name: str, server_index: int) -> Dict:
         """
-        获取设备详细信息（带缓存）
-        
-        优先使用缓存的设备信息，避免在相机已被占用时重复创建设备
+        获取设备详细信息（带缓存）。
+
+        优先使用缓存的设备信息，避免在相机已被占用时重复创建设备。
+        缓存有效性通过 SDK 的 IsServerAccessible 判断，而非 ping（ping 在相机
+        物理断开后可能因 ARP 缓存而误报可达）。
         """
-        # 如果缓存中有信息，直接返回
         if server_name in self._device_info_cache:
             cached_info = self._device_info_cache[server_name]
-            # 验证缓存的IP地址是否仍然有效（通过ping）
-            ip_address = cached_info.get('ip_address', '').strip()
-            if ip_address and self._verify_ip_reachable(ip_address):
-                print(f"[Sapera] 使用缓存的设备信息: {server_name}")
-                return cached_info
-            else:
-                # IP不可达，清除缓存
-                print(f"[Sapera] 缓存的IP不可达，清除缓存: {server_name}")
-                del self._device_info_cache[server_name]
-        
+            try:
+                if SapManager.IsServerAccessible(server_index):
+                    print(f"[Sapera] 使用缓存的设备信息: {server_name}")
+                    return cached_info
+            except Exception:
+                pass
+            # 服务器不可达，清除缓存
+            print(f"[Sapera] 服务器不可达，清除缓存: {server_name}")
+            del self._device_info_cache[server_name]
+
         # 尝试获取新的设备信息
         device_info = self._get_device_info(server_name, server_index)
-        
+
         # 如果成功获取到信息，缓存起来
         if device_info and device_info.get('ip_address'):
             self._device_info_cache[server_name] = device_info
-        
+
         return device_info
-    
-    def _verify_ip_reachable(self, ip_address: str, timeout_ms: int = 500) -> bool:
-        """
-        验证IP地址是否可达（通过ping）
-        
-        Args:
-            ip_address: IP地址
-            timeout_ms: 超时时间（毫秒）
-        
-        Returns:
-            bool: IP是否可达
-        """
-        try:
-            import subprocess
-            result = subprocess.run(
-                ['ping', '-n', '1', '-w', str(timeout_ms), ip_address],
-                capture_output=True,
-                text=True,
-                timeout=timeout_ms / 1000.0 + 0.5
-            )
-            return result.returncode == 0
-        except Exception:
-            return False
     
     def _get_device_info(self, server_name: str, server_index: int) -> Dict:
         """
