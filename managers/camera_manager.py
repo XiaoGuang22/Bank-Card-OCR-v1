@@ -18,6 +18,7 @@ from camera.sapera_camera_discovery import (
     SaperaCameraDiscovery, SaperaCameraController, SaperaCameraInfo,
     get_sapera_discovery, get_sapera_controller
 )
+from camera.sapera_camera_manager import get_sapera_camera_manager
 from managers.audit_log_manager import AuditLogManager
 
 if TYPE_CHECKING:
@@ -66,9 +67,10 @@ class EnhancedCameraManager:
         # 连接状态
         self._state: str = ConnectionState.DISCONNECTED
 
-        # Sapera 扫描器与控制器
+        # Sapera 扫描器、控制器与切换管理器
         self._sapera_discovery = get_sapera_discovery()
         self._sapera_controller = get_sapera_controller()
+        self._sapera_manager = get_sapera_camera_manager()
 
         # 日志管理器
         self._log = AuditLogManager()
@@ -210,13 +212,14 @@ class EnhancedCameraManager:
     ):
         """
         手动切换到目标相机（异步执行）。
+        从 Sapera 扫描结果中匹配目标 IP，委托 SaperaCameraManager 执行实际切换。
 
         Args:
-            target: 目标相机
-            user_name / user_role: 操作人信息，用于写日志
+            target: 目标相机（来自方案文件或 UI 选择）
+            user_name / user_role: 操作人信息
             on_result: 完成回调 fn(success: bool, message: str)
         """
-        if self._current and self._current == target:
+        if self._current_camera and self._current_camera == target:
             if on_result:
                 on_result(True, "已是当前相机，无需切换")
             return
@@ -240,9 +243,9 @@ class EnhancedCameraManager:
     ):
         """
         加载方案时系统自动切换相机（异步执行）。
-        与手动切换逻辑相同，但日志 action 不同。
+        与手动切换逻辑相同，仅日志 action 不同。
         """
-        if self._current and self._current == target:
+        if self._current_camera and self._current_camera == target:
             if on_result:
                 on_result(True, "已是当前相机，无需切换")
             return
@@ -257,6 +260,15 @@ class EnhancedCameraManager:
     # 核心切换逻辑
     # ------------------------------------------------------------------
 
+    def _match_sapera_camera(self, target: CameraInfo) -> Optional[SaperaCameraInfo]:
+        """从最近一次 Sapera 扫描结果中查找与 target IP 匹配的相机"""
+        for camera in self._sapera_discovery.last_results:
+            device_info = camera.device_info or {}
+            camera_ip = device_info.get('ip_address', '').strip()
+            if camera_ip and camera_ip == target.ip:
+                return camera
+        return None
+
     def _do_switch(
         self,
         target: CameraInfo,
@@ -265,112 +277,87 @@ class EnhancedCameraManager:
         action: str,
         on_result: Optional[Callable],
     ):
-        old_camera = self._current
+        """
+        核心切换逻辑：
+        1. 从 Sapera 扫描结果中按 IP 匹配目标相机
+        2. 委托 SaperaCameraManager 执行硬件切换
+        3. 失败时回退到上一次成功的连接
+        """
+        old_camera = self._current_camera
         old_ip = old_camera.ip if old_camera else ""
         old_display = old_camera.display_name if old_camera else "无"
 
         self._notify_state(ConnectionState.CONNECTING, old_camera)
 
-        success, message = self._connect(target)
+        # 步骤1：从扫描结果中匹配目标相机
+        sapera_target = self._match_sapera_camera(target)
+
+        if sapera_target is None:
+            # 未在扫描结果中找到，保持原连接不变
+            self._current_camera = old_camera
+            self._notify_state(
+                ConnectionState.CONNECTED if old_camera else ConnectionState.FAILED,
+                old_camera,
+            )
+            if on_result:
+                try:
+                    on_result(False, f"未在扫描结果中找到目标相机 IP: {target.ip}", user_role)
+                except TypeError:
+                    on_result(False, f"未在扫描结果中找到目标相机 IP: {target.ip}")
+            return
+
+        # 步骤2：委托 SaperaCameraManager 执行实际的硬件切换
+        success, message = self._sapera_manager.switch_camera(sapera_target)
 
         if success:
-            self._last_successful = self._current  # 保存回退点（切换前的）
-            self._current = target
-            self._notify_state(ConnectionState.CONNECTED, target)
+            self._last_successful = self._current_camera
+            self._current_camera = sapera_target
+            self._notify_state(ConnectionState.CONNECTED, sapera_target)
 
-            # 写日志
             self._log.log(
                 user_name=user_name,
                 user_role=user_role,
                 operation_type="control_settings",
                 operation_action=action,
-                target_object=f"{old_display} → {target.display_name}",
+                target_object=f"{old_display} → {sapera_target.formatted_display_name}",
                 old_value=old_ip,
                 new_value=target.ip,
                 operation_result="成功",
             )
         else:
-            # 失败：回退到上一次成功的连接
+            # 步骤3：失败回退到上一次成功的连接
             fallback = self._last_successful
             if fallback and fallback != old_camera:
-                fb_ok, _ = self._connect(fallback)
+                fb_ok, _ = self._sapera_manager.switch_camera(fallback)
                 if fb_ok:
-                    self._current = fallback
+                    self._current_camera = fallback
                     self._notify_state(ConnectionState.CONNECTED, fallback)
                 else:
-                    self._current = None
+                    self._current_camera = None
                     self._notify_state(ConnectionState.FAILED, None)
             else:
-                # 保持原连接不变
-                self._current = old_camera
+                self._current_camera = old_camera
                 self._notify_state(
                     ConnectionState.CONNECTED if old_camera else ConnectionState.FAILED,
                     old_camera,
                 )
 
-            # 写失败日志
             self._log.log(
                 user_name=user_name,
                 user_role=user_role,
                 operation_type="control_settings",
                 operation_action=action,
-                target_object=f"{old_display} → {target.display_name}",
+                target_object=f"{old_display} → {sapera_target.formatted_display_name}",
                 old_value=old_ip,
                 new_value=target.ip,
                 operation_result="失败",
             )
 
         if on_result:
-            # 将用户角色一并传给回调，供调用方区分失败处理策略
             try:
                 on_result(success, message, user_role)
             except TypeError:
-                # 兼容只接受两个参数的旧回调
                 on_result(success, message)
-
-    def _connect(self, camera: CameraInfo) -> tuple[bool, str]:
-        """
-        验证目标 IP:port 是否为可用相机。
-        先做 TCP 连通性探测，再发送 IDENTIFY 握手确认对端是相机服务。
-        若对端无响应（普通 TCP 服务）则判定为非相机，返回失败。
-        """
-        import socket as _socket
-        timeout_s = 2.0
-        try:
-            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
-                s.settimeout(timeout_s)
-                s.connect((camera.ip, camera.port))
-
-                # 发送握手指令，验证对端是相机服务
-                try:
-                    s.settimeout(0.5)
-                    s.sendall(b"IDENTIFY\r\n")
-                    resp = s.recv(256)
-                    # 收到任何响应都认为是相机服务
-                    # （真实相机会回复标识信息，非相机服务通常不响应或立即断开）
-                    if resp:
-                        return True, "连接成功"
-                    else:
-                        return False, f"对端无响应，可能不是相机：{camera.ip}:{camera.port}"
-                except _socket.timeout:
-                    return False, f"握手超时，对端不是相机服务：{camera.ip}:{camera.port}"
-                except Exception:
-                    return False, f"握手失败，对端不是相机服务：{camera.ip}:{camera.port}"
-
-        except _socket.timeout:
-            return False, f"连接超时：{camera.ip}:{camera.port}"
-        except ConnectionRefusedError:
-            return False, f"连接被拒绝：{camera.ip}:{camera.port}"
-        except Exception as e:
-            return False, f"连接失败：{e}"
-
-        # 若有 Sapera 连接器，执行 Sapera 重连
-        if camera.server_name and self._sapera_connector:
-            try:
-                if not self._sapera_connector(camera.server_name):
-                    return False, f"Sapera连接失败：{camera.server_name}"
-            except Exception as e:
-                return False, f"Sapera连接异常：{e}"
 
     # ------------------------------------------------------------------
     # 断开连接
@@ -383,7 +370,7 @@ class EnhancedCameraManager:
                 self._sapera_disconnector()
             except Exception:
                 pass
-        self._current = None
+        self._current_camera = None
         self._notify_state(ConnectionState.DISCONNECTED, None)
 
     # ------------------------------------------------------------------

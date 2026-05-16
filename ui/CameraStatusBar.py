@@ -241,23 +241,12 @@ class CameraStatusBar(tk.Frame):
         self._execute_camera_switch(target)
     
     def _execute_camera_switch(self, target):
-        """执行相机切换"""
-        # 判断是 Sapera 相机还是网络相机
-        if hasattr(target, 'server_name') and target.server_name:
-            # Sapera 相机切换
-            threading.Thread(            # 后台线程执行切换
-                target=self._switch_sapera_camera,
-                args=(target,),
-                daemon=True
-            ).start()
-        else:
-            # 网络相机切换
-            self._manager.switch_camera(
-                target=target,
-                user_name=self.username,
-                user_role=self.role,
-                on_result=lambda success, message: self._on_switch_result(success, message, self.role, target),
-            )
+        """执行相机切换（所有相机均为 Sapera 相机）"""
+        threading.Thread(
+            target=self._switch_sapera_camera,
+            args=(target,),
+            daemon=True
+        ).start()
     
     def _switch_sapera_camera(self, target):
         """切换 Sapera 相机（在后台线程中执行）"""
