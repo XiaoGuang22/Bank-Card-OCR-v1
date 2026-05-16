@@ -170,8 +170,9 @@ class SolutionManagementPanel(tk.Frame):
             messagebox.showwarning("警告", "请先在工具界面选择一个字体库方案")
             return
 
-        # 字体库方案路径
-        font_solution_path = os.path.join("solutions", solution_name)
+        # 字体库方案路径（使用绝对路径，避免工作目录不一致导致找不到）
+        from config import SOLUTIONS_PATH
+        font_solution_path = os.path.join(SOLUTIONS_PATH, solution_name)
 
         # 若目录已存在，询问是否覆盖
         overwrite = False
@@ -198,6 +199,34 @@ class SolutionManagementPanel(tk.Frame):
             if self.main_window and hasattr(self.main_window, 'saved_ocr_state'):
                 preview_image = self.main_window.saved_ocr_state.get('image')
 
+            # ── 收集当前相机信息（serial / name / ip / port / server_name）──
+            camera_info_dict = {}
+            try:
+                from managers.camera_manager import CameraManager
+                from camera.sapera_camera_discovery import SaperaCameraInfo
+                current_cam = CameraManager().current_camera
+                if current_cam is not None:
+                    if isinstance(current_cam, SaperaCameraInfo):
+                        dev = current_cam.device_info or {}
+                        camera_info_dict = {
+                            "serial":      dev.get("serial", ""),
+                            "name":        dev.get("user_id", "") or current_cam.display_name,
+                            "ip":          dev.get("ip_address", ""),
+                            "port":        5024,
+                            "server_name": current_cam.server_name,
+                        }
+                    else:
+                        # CameraInfo
+                        camera_info_dict = {
+                            "serial":      getattr(current_cam, "serial", ""),
+                            "name":        getattr(current_cam, "name", ""),
+                            "ip":          current_cam.ip,
+                            "port":        current_cam.port,
+                            "server_name": getattr(current_cam, "server_name", ""),
+                        }
+            except Exception as e:
+                print(f"[SolutionManagementPanel] 获取相机信息失败: {e}")
+
             self.workspace_manager.save_workspace(
                 name=name,
                 font_solution_path=font_solution_path,
@@ -206,6 +235,7 @@ class SolutionManagementPanel(tk.Frame):
                 tcp_settings=tcp_settings,
                 overwrite=overwrite,
                 preview_image=preview_image,
+                camera_info=camera_info_dict if camera_info_dict else None,
             )
             self.refresh_list()
             messagebox.showinfo("成功", f"解决方案 '{name}' 保存成功")
@@ -237,77 +267,182 @@ class SolutionManagementPanel(tk.Frame):
             messagebox.showerror("错误", f"加载失败：{e}")
             return
 
-        # 加载方案前先处理相机自动切换 ──
-        # 从方案文件解析关联相机，若与当前不同则自动切换
-        layout_config = data.get('layout_config', {})
-        if layout_config:
+        # ── 加载方案前处理相机自动切换 ──
+        # 优先从 workspace_config.json 的 connected_camera 节点读取，
+        # 兼容旧方案（仅有 layout_config.json 中的 connected_camera）
+        camera_node = (
+            data.get('connected_camera')
+            or data.get('layout_config', {}).get('connected_camera')
+        )
+
+        if camera_node and isinstance(camera_node, dict) and camera_node.get('ip'):
+            self._do_load_with_camera_switch(name, data, camera_node)
+        else:
+            # 方案没有关联相机，直接加载
+            self._finish_load(name, data)
+
+    def _do_load_with_camera_switch(self, name: str, data: dict, camera_node: dict):
+        """
+        处理加载方案时的相机自动切换。
+
+        流程：
+        1. 在主线程中做优先级匹配（纯内存操作，不阻塞）
+        2. 若目标与当前相机相同，直接加载
+        3. 否则在后台线程执行硬件切换，完成后通过 after() 回主线程处理结果
+        """
+        try:
+            from managers.camera_manager import CameraManager
+            from camera.camera_discovery import CameraInfo
+            cam_mgr = CameraManager()
+
+            username = getattr(self.main_window, 'username', '') if self.main_window else ''
+            role     = getattr(self.main_window, 'role', '')     if self.main_window else ''
+
+            # ── 构造目标 CameraInfo（携带 serial / name / server_name）──
+            target_info = CameraInfo(
+                ip=camera_node.get("ip", ""),
+                port=int(camera_node.get("port", 5024)),
+                name=camera_node.get("name", ""),
+                serial=camera_node.get("serial", ""),
+                server_name=camera_node.get("server_name", ""),
+            )
+
+            # ── 三级优先级匹配（主线程，纯内存，不阻塞）──
+            matched = cam_mgr.find_matching_sapera_camera(target_info)
+
+            if matched is not None:
+                effective_target = matched
+            elif target_info.server_name:
+                # 扫描结果为空或 device_info 不完整，但有 server_name：
+                # 直接把 CameraInfo 传给 auto_switch_camera，
+                # _do_switch 内部会用 server_name 兜底构造 SaperaCameraInfo
+                effective_target = target_info
+            else:
+                # 既无扫描结果又无 server_name，无法切换，直接加载
+                print("[SolutionManagementPanel] 无法匹配目标相机且无 server_name，直接加载")
+                self._finish_load(name, data)
+                return
+
+            # 构造显示名（兼容两种类型）
             try:
-                from managers.camera_manager import CameraManager
-                cam_mgr = CameraManager()
-                target_camera = cam_mgr.parse_camera_from_layout(layout_config)
-                if target_camera and target_camera != cam_mgr.current_camera:
-                    # 获取当前用户信息
-                    username = getattr(self.main_window, 'username', '') if self.main_window else ''
-                    role = getattr(self.main_window, 'role', '') if self.main_window else ''
+                cam_display = effective_target.formatted_display_name
+            except AttributeError:
+                cam_display = getattr(effective_target, 'display_name',
+                                      camera_node.get("name") or camera_node.get("ip", "未知相机"))
 
-                    # 用 Event 阻塞等待切换结果（最多 5 秒）
-                    import threading
-                    switch_event = threading.Event()
-                    switch_result = [None, None, None]  # [success, message, role]
+            # 若已是当前相机，直接加载（比较 server_name，兼容两种类型）
+            current = cam_mgr.current_camera
+            target_sn = (
+                effective_target.server_name
+                if hasattr(effective_target, 'server_name')
+                else getattr(effective_target, 'server_name', '')
+            )
+            current_sn = getattr(current, 'server_name', '') if current else ''
+            if target_sn and current_sn and target_sn == current_sn:
+                self._finish_load(name, data)
+                return
 
-                    def _on_auto_switch(success, message, user_role=''):
-                        switch_result[0] = success
-                        switch_result[1] = message
-                        switch_result[2] = user_role
-                        switch_event.set()
+            # ── 禁用加载按钮，防止重复点击 ──
+            self._set_load_button_state(False)
 
-                    cam_mgr.auto_switch_camera(
-                        target=target_camera,
-                        user_name=username,
-                        user_role=role,
-                        on_result=_on_auto_switch,
-                    )
-                    switch_event.wait(timeout=5.0)
+        except Exception as e:
+            print(f"[SolutionManagementPanel] 相机匹配异常，直接加载: {e}")
+            self._finish_load(name, data)
+            return
 
-                    success = switch_result[0]
-                    message = switch_result[1]
+        # ── 后台线程执行硬件切换，完成后回主线程 ──
+        def _on_switch_done(success: bool, message: str, user_role: str = ""):
+            """切换完成回调（在后台线程中调用）"""
+            try:
+                # 检查 widget 是否还存在，防止 panel 被销毁后 TclError
+                if self.winfo_exists():
+                    self.after(0, lambda: self._handle_switch_result(
+                        success, message, cam_display, role, name, data
+                    ))
+            except Exception as ex:
+                print(f"[SolutionManagementPanel] 切换回调异常: {ex}")
 
-                    if success:
-                        # 自动切换成功，提示用户
-                        messagebox.showinfo(
-                            "相机已切换",
-                            f"已自动切换至方案关联相机：{target_camera.display_name}",
-                            parent=self,
-                        )
-                    else:
-                        # 切换失败，按角色区分处理
-                        if role == "操作员":
-                            # 操作员 → 中止加载，提示联系技术员
-                            messagebox.showerror(
-                                "相机不可用",
-                                f"方案关联相机 '{target_camera.display_name}' 不可用，"
-                                f"请联系技术员。\n\n加载已中止，当前连接不变。",
-                                parent=self,
-                            )
-                            return  # 中止加载
-                        else:
-                            # 管理员/技术员 → 不中止，提示可手动另选相机
-                            proceed = messagebox.askyesno(
-                                "相机切换失败",
-                                f"方案关联相机 '{target_camera.display_name}' 不可用。\n\n"
-                                f"是否仍继续加载方案（使用当前相机）？",
-                                parent=self,
-                            )
-                            if not proceed:
-                                return  # 用户选择不继续
-            except Exception:
-                pass  # 相机切换异常不阻断方案加载
+        cam_mgr.auto_switch_camera(
+            target=effective_target,
+            user_name=username,
+            user_role=role,
+            on_result=_on_switch_done,
+        )
 
+    def _handle_switch_result(
+        self,
+        success: bool,
+        message: str,
+        cam_display: str,
+        role: str,
+        name: str,
+        data: dict,
+    ):
+        """
+        在主线程中处理相机切换结果，然后决定是否继续加载方案。
+
+        成功：提示已切换，继续加载。
+        失败-操作员：提示不可用，中止加载。
+        失败-管理员/技术员：询问是否继续，用户可选择继续或取消。
+        """
+        # 恢复加载按钮
+        self._set_load_button_state(True)
+
+        if success:
+            # FC-13：自动切换成功，提示用户
+            messagebox.showinfo(
+                "相机已切换",
+                f"已自动切换至方案关联相机：{cam_display}",
+                parent=self,
+            )
+            self._finish_load(name, data)
+
+        elif role == "操作员":
+            # FC-14：操作员 → 中止加载，提示联系技术员
+            messagebox.showerror(
+                "相机不可用",
+                f"方案关联相机 '{cam_display}' 不可用，请联系技术员。\n\n"
+                f"加载已中止，当前连接不变。",
+                parent=self,
+            )
+            # 不调用 _finish_load，中止加载
+
+        else:
+            # FC-15：管理员/技术员 → 不中止，询问是否继续
+            proceed = messagebox.askyesno(
+                "相机切换失败",
+                f"方案关联相机 '{cam_display}' 不可用。\n\n"
+                f"是否仍继续加载方案（使用当前相机）？",
+                parent=self,
+            )
+            if proceed:
+                self._finish_load(name, data)
+            # 否则取消，不加载
+
+    def _finish_load(self, name: str, data: dict):
+        """应用方案数据并显示成功提示"""
         self._apply_loaded_workspace(data)
-        # 记录当前加载的 workspace 名，供运行界面使用
         if self.main_window:
             self.main_window._current_workspace_name = name
         messagebox.showinfo("成功", f"解决方案 '{name}' 加载成功")
+
+    def _set_load_button_state(self, enabled: bool):
+        """启用/禁用加载按钮，防止切换期间重复点击"""
+        try:
+            for widget in self.winfo_children():
+                self._toggle_button_recursive(widget, "加载", enabled)
+        except Exception:
+            pass
+
+    def _toggle_button_recursive(self, widget, text: str, enabled: bool):
+        """递归查找并切换指定文本的按钮状态"""
+        try:
+            if isinstance(widget, tk.Button) and widget.cget("text") == text:
+                widget.config(state=tk.NORMAL if enabled else tk.DISABLED)
+            for child in widget.winfo_children():
+                self._toggle_button_recursive(child, text, enabled)
+        except Exception:
+            pass
 
     def _apply_loaded_workspace(self, data: dict):
         """

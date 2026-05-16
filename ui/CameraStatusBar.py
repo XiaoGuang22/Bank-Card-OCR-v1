@@ -250,44 +250,49 @@ class CameraStatusBar(tk.Frame):
     
     def _switch_sapera_camera(self, target):
         """切换 Sapera 相机（在后台线程中执行）"""
-        try:
-            success, message = self._sapera_manager.switch_camera(target)
-            # 线程安全的回调
-            def callback():              # 切换结果回调
+        # ★ 修复：通过 EnhancedCameraManager 切换，确保 _current_camera 同步更新。
+        # 之前直接调用 self._sapera_manager.switch_camera 会绕过 EnhancedCameraManager，
+        # 导致保存方案时 CameraManager().current_camera 仍是旧相机。
+        def on_result(success: bool, message: str, user_role: str = ""):
+            def callback():
                 self._on_switch_result(success, message, self.role, target)
-            
             try:
                 self.after_idle(callback)
             except RuntimeError:
-                import threading
-                if threading.current_thread() is threading.main_thread():
+                import threading as _t
+                if _t.current_thread() is _t.main_thread():
                     callback()
                 else:
-                    def delayed_callback():
+                    def delayed():
                         try:
                             self.after_idle(callback)
-                        except:
+                        except Exception:
                             pass
-                    threading.Timer(0.1, delayed_callback).start()
-                    
+                    _t.Timer(0.1, delayed).start()
+
+        try:
+            self._manager.switch_camera(
+                target=target,
+                user_name=self.username,
+                user_role=self.role,
+                on_result=on_result,
+            )
         except Exception as e:
-            # 线程安全的错误回调
-            def error_callback():            # 切换异常回调
+            def error_callback():
                 self._on_switch_result(False, f"切换异常: {e}", self.role, target)
-            
             try:
-                self.after_idle(error_callback)          # 切换异常回调
+                self.after_idle(error_callback)
             except RuntimeError:
-                import threading
-                if threading.current_thread() is threading.main_thread():
+                import threading as _t
+                if _t.current_thread() is _t.main_thread():
                     error_callback()
                 else:
-                    def delayed_error_callback():
+                    def delayed_err():
                         try:
                             self.after_idle(error_callback)
-                        except:
+                        except Exception:
                             pass
-                    threading.Timer(0.1, delayed_error_callback).start()
+                    _t.Timer(0.1, delayed_err).start()
 
     def _is_detection_running(self) -> bool:
         """判断当前是否有检测在运行"""

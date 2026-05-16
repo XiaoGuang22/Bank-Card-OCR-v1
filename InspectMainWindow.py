@@ -369,7 +369,79 @@ class CameraController:
         # 5. 【关键修复】强制设置为内部时钟模式（避免上次关闭时的触发模式影响）
         safe_call(self.set_trigger_mode, "internal", interval_ms=100)
 
+        # 6. 连接成功后，从 acq_device 读取序列号并回填到 SaperaCameraInfo
+        #    （扫描时设备被占用无法读取，连接后才能读到）
+        safe_call(self._backfill_serial_to_sapera_info)
+
         return True
+
+    @safe_execute(default_return=None, log_error=False, error_message="回填序列号失败")
+    def _backfill_serial_to_sapera_info(self):
+        """
+        连接成功后从 acq_device 读取序列号，回填到 EnhancedCameraManager
+        当前相机的 device_info['serial']。
+
+        背景：扫描阶段 _get_device_info 会因设备被占用而跳过，导致 serial 为空。
+        连接后 acq_device 已由本 CameraController 持有，可以直接读取。
+        """
+        if not self.acq_device:
+            return
+
+        serial = ""
+        # 尝试读取 DeviceSerialNumber
+        for feature in ("DeviceSerialNumber", "DeviceID"):
+            try:
+                if not self.acq_device.IsFeatureAvailable(feature):
+                    continue
+                result = self.acq_device.GetFeatureValue(feature)
+                raw = result[1] if isinstance(result, tuple) and len(result) >= 2 else result
+                if raw is None:
+                    continue
+                # 整数编码的序列号（部分 Genie 相机）
+                if isinstance(raw, (int, float)):
+                    hex_str = hex(int(raw))[2:]
+                    if len(hex_str) % 2:
+                        hex_str = "0" + hex_str
+                    decoded = bytes.fromhex(hex_str).decode("ascii", errors="ignore").strip("\x00")
+                    serial = decoded if (decoded and decoded.isprintable()) else str(int(raw))
+                else:
+                    serial = str(raw).strip()
+                if serial:
+                    break
+            except Exception:
+                continue
+
+        if not serial:
+            return
+
+        # 回填到 EnhancedCameraManager 当前相机的 device_info
+        try:
+            from managers.camera_manager import EnhancedCameraManager
+            mgr = EnhancedCameraManager()
+            cam = mgr.current_camera
+            if cam is not None and hasattr(cam, "device_info"):
+                if not (cam.device_info or {}).get("serial"):
+                    if cam.device_info is None:
+                        cam.device_info = {}
+                    cam.device_info["serial"] = serial
+                    print(f"[CameraController] 序列号已回填: {serial} → {getattr(cam, 'server_name', '')}")
+            # 同时更新 SaperaCameraDiscovery 缓存，下次扫描结果也能带上序列号
+            from camera.sapera_camera_discovery import get_sapera_discovery
+            disc = get_sapera_discovery()
+            for cached_cam in disc.last_results:
+                if cached_cam.server_name == self._current_server_name:
+                    if cached_cam.device_info is None:
+                        cached_cam.device_info = {}
+                    if not cached_cam.device_info.get("serial"):
+                        cached_cam.device_info["serial"] = serial
+                    break
+            # 同步到 discovery 的设备信息缓存
+            if hasattr(disc, "_device_info_cache"):
+                cached = disc._device_info_cache.get(self._current_server_name)
+                if cached is not None and not cached.get("serial"):
+                    cached["serial"] = serial
+        except Exception as e:
+            print(f"[CameraController] 回填序列号到 CameraManager 失败: {e}")
 
     @ErrorHandler.handle_camera_error
     def _create_acq_device(self):
