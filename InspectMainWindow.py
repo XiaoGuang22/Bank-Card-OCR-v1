@@ -313,20 +313,39 @@ class CameraController:
     @ErrorHandler.handle_camera_error
     def disconnect(self):
         """断开相机连接"""
+        # 1. 先停止采集
         self._stop_acquisition(silent=True)
+        
+        # 2. 解绑回调（在销毁对象之前）
         if self.xfer:
-            try: self.xfer.XferNotify -= self._on_frame_callback
-            except Exception: pass
+            try:
+                self.xfer.XferNotify -= self._on_frame_callback
+            except Exception:
+                pass
+        
+        # 3. 等待一小段时间，确保回调不再被触发
+        import time
+        time.sleep(0.1)
+        
+        # 4. 销毁传输对象
+        if self.xfer:
             safe_call(self.xfer.Destroy)
             self.xfer = None
+        
+        # 5. 销毁缓冲区
         if self.buffers:
             safe_call(self.buffers.Destroy)
             self.buffers = None
+        
+        # 6. 销毁设备
         if self.acq_device:
             safe_call(self.acq_device.Destroy)
             self.acq_device = None
+        
         self.location = None
         self.is_running = False
+        
+        # 7. 清空最新帧
         with self.lock:
             self.latest_frame = None
 
@@ -402,7 +421,11 @@ class CameraController:
                     hex_str = hex(int(raw))[2:]
                     if len(hex_str) % 2:
                         hex_str = "0" + hex_str
-                    decoded = bytes.fromhex(hex_str).decode("ascii", errors="ignore").strip("\x00")
+                    # ★★★ 修复：反转字节顺序 ★★★
+                    # 将hex字符串按字节对分组，然后反转顺序
+                    byte_pairs = [hex_str[i:i+2] for i in range(0, len(hex_str), 2)]
+                    reversed_hex = ''.join(reversed(byte_pairs))
+                    decoded = bytes.fromhex(reversed_hex).decode("ascii", errors="ignore").strip("\x00")
                     serial = decoded if (decoded and decoded.isprintable()) else str(int(raw))
                 else:
                     serial = str(raw).strip()
@@ -586,6 +609,10 @@ class CameraController:
 
     def _on_frame_callback(self, sender, args):
         """帧回调函数（使用临时文件方法，参考GenieCameraTriggerOptimized.py）"""
+        # ★★★ 添加保护：检查对象是否已被销毁 ★★★
+        if not self.xfer or not self.buffers:
+            return
+        
         if args.Trash:
             return
 
@@ -595,10 +622,11 @@ class CameraController:
     @ErrorHandler.handle_camera_error
     def _process_frame_callback(self):
         """处理帧回调的核心逻辑"""
-        # 使用 Sapera 的 Save 方法保存到临时文件，避免直接访问内存
-        if not self.buffers:
+        # ★★★ 添加保护：再次检查对象是否有效 ★★★
+        if not self.buffers or not self.is_running:
             return
 
+        # 使用 Sapera 的 Save 方法保存到临时文件，避免直接访问内存
         import tempfile
         project_dir = os.path.dirname(os.path.abspath(__file__))
         temp_dir = os.path.join(project_dir, "temp")
@@ -1350,14 +1378,13 @@ class CameraController:
             if self.xfer and self.is_running:
                 # 先 Freeze（暂停），等待当前帧完成
                 self.xfer.Freeze()
-                # 等待一小段时间，让当前帧完成
+                # 等待足够时间，让 SDK 内部回调队列排空
                 import time
-                time.sleep(0.05)  # 50ms
+                time.sleep(0.5)
                 # 再 Abort（中止）
                 self.xfer.Abort()
+                time.sleep(0.1)
                 self.is_running = False
-                pass  # print removed
-                pass
         except Exception as e:
             # 忽略清理过程中的错误
             pass
@@ -1441,40 +1468,48 @@ class CameraController:
         except Exception as e:
             pass
         
-        # 3. 释放传输对象
+        # 3. 解绑传输回调（必须在 Destroy/Dispose 之前，防止旧回调在下次登录时触发）
         if self.xfer:
             try:
+                self.xfer.XferNotify -= self._on_frame_callback
+            except Exception:
+                pass
+
+        # 4. 释放传输对象（先 Destroy 再 Dispose，与 disconnect() 保持一致）
+        if self.xfer:
+            try:
+                self.xfer.Destroy()
+            except Exception:
+                pass
+            try:
                 self.xfer.Dispose()
-                pass  # print removed
+            except Exception:
                 pass
-            except Exception as e:
-                pass
-            finally:
-                self.xfer = None
-        
-        # 4. 释放缓冲区
+            self.xfer = None
+
+        # 5. 释放缓冲区
         if self.buffers:
             try:
                 self.buffers.Destroy()
+            except Exception:
+                pass
+            try:
                 self.buffers.Dispose()
-                pass  # print removed
+            except Exception:
                 pass
-            except Exception as e:
-                pass
-            finally:
-                self.buffers = None
-        
-        # 5. 释放采集设备
+            self.buffers = None
+
+        # 6. 释放采集设备
         if self.acq_device:
             try:
                 self.acq_device.Destroy()
+            except Exception:
+                pass
+            try:
                 self.acq_device.Dispose()
-                pass  # print removed
+            except Exception:
                 pass
-            except Exception as e:
-                pass
-            finally:
-                self.acq_device = None
+            self.acq_device = None
         
         pass  # print removed
 # ==============================================================================
@@ -2712,7 +2747,20 @@ class InspectMainWindow:
     ):
         """向操作日志面板写入一条记录（线程安全）"""
         try:
-            if self.audit_log_panel is not None:
+            # ★★★ 自动添加当前相机信息到 target_object ★★★
+            # 如果 target_object 为空，直接使用相机信息
+            # 如果 target_object 不为空，在前面添加相机信息
+            camera_info = self._get_current_camera_info()
+            if camera_info:
+                if target_object:
+                    # 检查是否已经包含相机信息（避免重复添加）
+                    if not target_object.startswith(camera_info):
+                        target_object = f"{camera_info} > {target_object}"
+                else:
+                    target_object = camera_info
+            
+            # ★★★ 检查日志面板是否存在且未被销毁 ★★★
+            if self.audit_log_panel is not None and not getattr(self.audit_log_panel, '_destroyed', False):
                 self.audit_log_panel.append_log(
                     user_name=self.username,
                     user_role=self.role,
@@ -2724,6 +2772,7 @@ class InspectMainWindow:
                     operation_result=operation_result,
                 )
             elif AuditLogManager is not None:
+                # 日志面板不存在或已销毁，直接写入数据库
                 AuditLogManager().log(
                     user_name=self.username,
                     user_role=self.role,
@@ -2734,24 +2783,104 @@ class InspectMainWindow:
                     new_value=new_value,
                     operation_result=operation_result,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[InspectMainWindow] 记录日志失败: {e}")
+
+    def _get_current_camera_info(self) -> str:
+        """
+        获取当前相机信息，格式：序列号(IP)
+        例如：S1234567(192.168.10.11)
+        """
+        try:
+            from managers.camera_manager import EnhancedCameraManager
+            cam = EnhancedCameraManager().current_camera
+            if cam:
+                # 获取序列号和IP
+                serial = ""
+                ip = ""
+                
+                # 从 SaperaCameraInfo 获取信息
+                if hasattr(cam, 'device_info') and cam.device_info:
+                    serial = cam.device_info.get('serial', '')
+                    ip = cam.device_info.get('ip_address', '')
+                
+                # 如果没有序列号，使用用户名或显示名
+                if not serial:
+                    if hasattr(cam, 'device_info') and cam.device_info:
+                        serial = cam.device_info.get('user_id', '')
+                    if not serial and hasattr(cam, 'display_name'):
+                        # 从 display_name 中提取（格式如 "S1049704 (192.168.11.136)"）
+                        display = cam.display_name
+                        if '(' in display:
+                            serial = display.split('(')[0].strip()
+                
+                # 如果没有IP，尝试从其他属性获取
+                if not ip:
+                    if hasattr(cam, 'ip'):
+                        ip = cam.ip
+                    elif hasattr(cam, 'display_name'):
+                        # 从 display_name 中提取IP
+                        display = cam.display_name
+                        if '(' in display and ')' in display:
+                            ip = display.split('(')[1].split(')')[0].strip()
+                
+                # 构造相机标识字符串
+                if serial and ip:
+                    return f"{serial}({ip})"
+                elif ip:
+                    return f"未知({ip})"
+        except Exception as e:
+            print(f"[InspectMainWindow] 获取相机信息失败: {e}")
+        return ""
 
     def _camera_target_object(self, suffix: str = "") -> str:
         """
-        日志字段规范：返回携带当前相机名和 IP 的 target_object 字符串。
-        格式：'CAM-B@192.168.10.22' 或 'CAM-B@192.168.10.22 > 传感器设置面板'
+        日志字段规范：返回携带当前相机序列号和 IP 的 target_object 字符串。
+        格式：'S1234567(192.168.10.11)' 或 'S1234567(192.168.10.11) > 传感器设置面板'
         若无相机连接则只返回 suffix。
         """
         try:
             from managers.camera_manager import EnhancedCameraManager
             cam = EnhancedCameraManager().current_camera
             if cam:
-                label = cam.name if cam.name else cam.ip
-                cam_str = f"{label}@{cam.ip}"
-                return f"{cam_str} > {suffix}" if suffix else cam_str
-        except Exception:
-            pass
+                # 获取序列号和IP
+                serial = ""
+                ip = ""
+                
+                # 从 SaperaCameraInfo 获取信息
+                if hasattr(cam, 'device_info') and cam.device_info:
+                    serial = cam.device_info.get('serial', '')
+                    ip = cam.device_info.get('ip_address', '')
+                
+                # 如果没有序列号，使用用户名或显示名
+                if not serial:
+                    if hasattr(cam, 'device_info') and cam.device_info:
+                        serial = cam.device_info.get('user_id', '')
+                    if not serial and hasattr(cam, 'display_name'):
+                        # 从 display_name 中提取（格式如 "S1049704 (192.168.11.136)"）
+                        display = cam.display_name
+                        if '(' in display:
+                            serial = display.split('(')[0].strip()
+                
+                # 如果没有IP，尝试从其他属性获取
+                if not ip:
+                    if hasattr(cam, 'ip'):
+                        ip = cam.ip
+                    elif hasattr(cam, 'display_name'):
+                        # 从 display_name 中提取IP
+                        display = cam.display_name
+                        if '(' in display and ')' in display:
+                            ip = display.split('(')[1].split(')')[0].strip()
+                
+                # 构造相机标识字符串
+                if serial and ip:
+                    cam_str = f"{serial}({ip})"
+                    return f"{cam_str} > {suffix}" if suffix else cam_str
+                elif ip:
+                    cam_str = f"未知({ip})"
+                    return f"{cam_str} > {suffix}" if suffix else cam_str
+        except Exception as e:
+            print(f"[InspectMainWindow] 获取相机信息失败: {e}")
         return suffix
 
     def close_application(self):
@@ -2768,6 +2897,9 @@ class InspectMainWindow:
                 self.tcp_service.stop()
             if hasattr(self, 'script_engine') and self.script_engine:
                 self.script_engine.stop_periodic()
+            # ★★★ 清理日志面板（停止所有回调） ★★★
+            if hasattr(self, 'audit_log_panel') and self.audit_log_panel:
+                self.audit_log_panel.destroy()
             # 清理相机资源
             if self.cam:
                 self.cam.cleanup()
@@ -2875,6 +3007,9 @@ class InspectMainWindow:
                 self.tcp_service.stop()
             if hasattr(self, 'script_engine') and self.script_engine:
                 self.script_engine.stop_periodic()
+            # ★★★ 清理日志面板（停止所有回调） ★★★
+            if hasattr(self, 'audit_log_panel') and self.audit_log_panel:
+                self.audit_log_panel.destroy()
             if self.cam:
                 self.cam.cleanup()
         except Exception:
@@ -2884,29 +3019,74 @@ class InspectMainWindow:
 
     def logout(self):
         """退出登录，销毁当前窗口并重新弹出登录界面"""
+        print("\n" + "="*60)
+        print(f"[Logout] 用户 {self.username} ({self.role}) 开始退出登录")
+        print("="*60)
+        
         try:
-            # 记录退出日志
+            # ★★★ 关键修复：先清理日志面板，再记录退出日志 ★★★
+            # 因为 _audit() 会触发日志面板刷新，必须先销毁面板
+            print("[Logout] 步骤1: 检查并销毁日志面板")
+            if hasattr(self, 'audit_log_panel') and self.audit_log_panel:
+                print(f"[Logout]   - 日志面板存在，_destroyed={getattr(self.audit_log_panel, '_destroyed', 'N/A')}")
+                self.audit_log_panel.destroy()
+                print("[Logout]   - 日志面板已销毁")
+                self.audit_log_panel = None  # 防止 _audit 访问已销毁的面板
+                print("[Logout]   - 日志面板引用已清空")
+            else:
+                print("[Logout]   - 日志面板不存在或已为 None")
+            
+            # 记录退出日志（此时日志面板已销毁，不会触发刷新）
+            print("[Logout] 步骤2: 记录退出日志到数据库")
             self._audit("login", "logout")
+            print("[Logout]   - 退出日志已记录")
+            
+            print("[Logout] 步骤3: 停止视频循环")
             self.video_loop_running = False
             if self.video_loop_id:
                 self.root.after_cancel(self.video_loop_id)
+                print("[Logout]   - 视频循环已停止")
+            
+            print("[Logout] 步骤4: 停止 TCP 服务和脚本引擎")
             if hasattr(self, 'tcp_service') and self.tcp_service:
                 self.tcp_service.stop()
+                print("[Logout]   - TCP 服务已停止")
             if hasattr(self, 'script_engine') and self.script_engine:
                 self.script_engine.stop_periodic()
+                print("[Logout]   - 脚本引擎已停止")
+            
+            print("[Logout] 步骤5: 清理相机资源")
             if self.cam:
                 self.cam.cleanup()
-        except Exception:
-            pass
+                print("[Logout]   - 相机资源已清理")
+                # ★★★ 关键修复：等待更长时间，确保所有相机回调都已停止 ★★★
+                import time
+                print("[Logout]   - 等待 0.5 秒，确保相机回调完全停止...")
+                time.sleep(0.5)
+                print("[Logout]   - 等待完成")
+        except Exception as e:
+            print(f"[Logout] ❌ 清理过程出错: {e}")
         finally:
+            print("[Logout] 步骤6: 销毁主窗口")
             self.root.destroy()
+            print("[Logout]   - 主窗口已销毁")
+            
             import tkinter as tk
             from ui.LoginWindow import LoginWindow
 
             def on_login_success(username, role):
+                print("\n" + "="*60)
+                print(f"[Login] 用户 {username} ({role}) 登录成功")
+                print("="*60)
+                print("[Login] 步骤1: 创建新的主窗口")
+                
                 from InspectMainWindow import InspectMainWindow
                 new_root = tk.Tk()
+                print("[Login]   - 新窗口已创建")
+                
+                print("[Login] 步骤2: 初始化 InspectMainWindow")
                 app = InspectMainWindow(new_root, username, role)
+                print("[Login]   - InspectMainWindow 初始化完成")
 
                 def on_closing():
                     try:
@@ -2920,10 +3100,14 @@ class InspectMainWindow:
                         new_root.destroy()
 
                 new_root.protocol("WM_DELETE_WINDOW", on_closing)
+                print("[Login] 步骤3: 启动主窗口事件循环")
                 new_root.mainloop()
 
+            print("[Logout] 步骤7: 创建登录窗口")
             login_root = tk.Tk()
             LoginWindow(login_root, on_login_success)
+            print("[Logout]   - 登录窗口已创建")
+            print("[Logout] 步骤8: 启动登录窗口事件循环")
             login_root.mainloop()
 
     def show_user_management(self):

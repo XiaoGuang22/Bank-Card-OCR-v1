@@ -333,6 +333,8 @@ class CameraStatusBar(tk.Frame):
             if success:
                 # 切换成功后提示用户确认旧图像，防止误用
                 self._notify_stale_image(target_camera)
+                # ★★★ 新增：切换成功后自动刷新日志面板 ★★★
+                self._refresh_audit_log()
             else:
                 messagebox.showerror(
                     "切换相机失败",
@@ -409,6 +411,28 @@ class CameraStatusBar(tk.Frame):
             )
         except Exception as e:
             print(f"[CameraStatusBar] 旧图像提示失败: {e}")
+
+    def _refresh_audit_log(self):
+        """
+        刷新操作日志面板（相机切换成功后调用）
+        """
+        try:
+            root = self.winfo_toplevel()            # 获取主窗口
+            app = getattr(root, '_app_instance', None)            # 获取主窗口实例
+            
+            if app and hasattr(app, 'audit_log_panel') and app.audit_log_panel is not None:
+                # ★★★ 修复：检查日志面板是否仍然有效 ★★★
+                try:
+                    # 检查 frame 是否仍然存在且未被销毁
+                    if app.audit_log_panel.frame.winfo_exists():
+                        # 调用日志面板的刷新方法
+                        app.audit_log_panel._load_recent()
+                        print("[CameraStatusBar] 日志面板已自动刷新")
+                except tk.TclError:
+                    # 窗口已被销毁，忽略
+                    pass
+        except Exception as e:
+            print(f"[CameraStatusBar] 刷新日志面板失败: {e}")
 
     # ------------------------------------------------------------------
     # 回调处理（后台线程调用，需 after 回到主线程）

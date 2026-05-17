@@ -67,6 +67,7 @@ class AuditLogPanel:
         self.viewer_name = viewer_name
         self.viewer_role = viewer_role
         self._manager = AuditLogManager()
+        self._destroyed = False  # ★★★ 添加销毁标志 ★★★
 
         self.frame = tk.Frame(parent, bg="#f5f5f5")
         self._build_ui()
@@ -140,20 +141,27 @@ class AuditLogPanel:
         table_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
 
         cols = ("时间", "用户", "角色", "操作类型", "具体动作", "目标对象", "结果", "IP")
+        
+        # 创建自定义样式，增加行高以支持多行显示
+        style = ttk.Style()
+        style.configure("Multiline.Treeview", rowheight=40)  # 设置行高为40像素（约2行文本）
+        
         self._tree = ttk.Treeview(
             table_frame, columns=cols, show="headings",
-            selectmode="browse", height=6
+            selectmode="browse", height=6,
+            style="Multiline.Treeview"  # 应用自定义样式
         )
 
         col_widths = {
-            "时间": 130, "用户": 80, "角色": 60,
-            "操作类型": 90, "具体动作": 110, "目标对象": 100,
-            "结果": 50, "IP": 110
+            "时间": 130, "用户": 70, "角色": 55,
+            "操作类型": 70, "具体动作": 120, "目标对象": 200,
+            "结果": 45, "IP": 105
         }
         for col in cols:
             self._tree.heading(col, text=col)
+            # 设置列居中对齐
             self._tree.column(col, width=col_widths.get(col, 80),
-                              minwidth=40, anchor="w")
+                              minwidth=40, anchor="center")  # 改为居中对齐
 
         # 滚动条
         vsb = ttk.Scrollbar(table_frame, orient=tk.VERTICAL,
@@ -178,6 +186,10 @@ class AuditLogPanel:
     # ------------------------------------------------------------------
     def _load_recent(self):
         """从数据库加载最近日志（在后台线程执行，避免阻塞 UI）"""
+        # ★★★ 检查是否已销毁 ★★★
+        if self._destroyed:
+            return
+            
         keyword = self._search_var.get().strip() if hasattr(self, "_search_var") else ""
         if keyword == "用户名 / 角色":
             keyword = ""
@@ -188,6 +200,10 @@ class AuditLogPanel:
         ).start()
 
     def _fetch_and_render(self, keyword: str):
+        # ★★★ 检查是否已销毁 ★★★
+        if self._destroyed:
+            return
+            
         rows = self._manager.query(
             viewer_name=self.viewer_name,
             viewer_role=self.viewer_role,
@@ -195,9 +211,18 @@ class AuditLogPanel:
             keyword=keyword,
         )
         # 回到主线程更新 UI
-        self.frame.after(0, lambda: self._render_rows(rows))
+        try:
+            if not self._destroyed and self.frame.winfo_exists():
+                self.frame.after(0, lambda: self._render_rows(rows))
+        except tk.TclError:
+            # 窗口已被销毁，忽略
+            pass
 
     def _render_rows(self, rows: list):
+        # ★★★ 检查是否已销毁 ★★★
+        if self._destroyed:
+            return
+            
         # 清空旧数据
         for item in self._tree.get_children():
             self._tree.delete(item)
@@ -209,6 +234,11 @@ class AuditLogPanel:
             tag_row = "even" if i % 2 == 0 else "odd"
             op_type = _TYPE_ZH.get(r["operation_type"], r["operation_type"])
             op_action = _ACTION_ZH.get(r["operation_action"], r["operation_action"])
+            
+            # 对目标对象进行自动换行处理（每30个字符换行）
+            target_obj = r["target_object"]
+            target_obj_wrapped = self._wrap_text(target_obj, max_width=30)
+            
             self._tree.insert(
                 "", tk.END,
                 values=(
@@ -217,12 +247,38 @@ class AuditLogPanel:
                     r["user_role"],
                     op_type,
                     op_action,
-                    r["target_object"],
+                    target_obj_wrapped,  # 使用换行后的文本
                     result,
                     r["ip_address"],
                 ),
                 tags=(tag_result, tag_row),
             )
+
+    def _wrap_text(self, text: str, max_width: int = 30) -> str:
+        """
+        将长文本按指定宽度自动换行
+        
+        Args:
+            text: 原始文本
+            max_width: 每行最大字符数
+            
+        Returns:
+            换行后的文本
+        """
+        if not text or len(text) <= max_width:
+            return text
+        
+        # 按箭头符号分割（相机切换格式：A → B）
+        if " → " in text:
+            parts = text.split(" → ")
+            if len(parts) == 2:
+                return f"{parts[0]}\n→ {parts[1]}"
+        
+        # 普通文本：每max_width个字符换行
+        lines = []
+        for i in range(0, len(text), max_width):
+            lines.append(text[i:i+max_width])
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # 实时追加（由主窗口调用，无需刷新全表）
@@ -243,6 +299,10 @@ class AuditLogPanel:
         写入数据库并实时追加到表格顶部。
         此方法可在任意线程调用。
         """
+        # ★★★ 检查是否已销毁 ★★★
+        if self._destroyed:
+            return
+            
         # 写库
         self._manager.log(
             user_name=user_name,
@@ -256,7 +316,13 @@ class AuditLogPanel:
             ip_address=ip_address or "",
         )
         # 刷新表格（回主线程）
-        self.frame.after(0, self._load_recent)
+        # ★★★ 再次检查是否已销毁，避免调度 after 回调 ★★★
+        if not self._destroyed:
+            try:
+                self.frame.after(0, self._load_recent)
+            except tk.TclError:
+                # 窗口已被销毁，忽略
+                pass
 
     # ------------------------------------------------------------------
     # 清理日志（管理员）
@@ -287,3 +353,11 @@ class AuditLogPanel:
         else:
             messagebox.showerror("清理失败", msg)
         self._load_recent()
+
+    def destroy(self):
+        """销毁日志面板（清理资源）"""
+        self._destroyed = True
+        try:
+            self.frame.destroy()
+        except:
+            pass

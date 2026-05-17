@@ -509,7 +509,11 @@ class SaperaCameraDiscovery:
                                 hex_str = hex(int(raw_value))[2:]
                                 if len(hex_str) % 2 == 1:
                                     hex_str = '0' + hex_str
-                                decoded = bytes.fromhex(hex_str).decode('ascii', errors='ignore').strip('\x00')
+                                # ★★★ 修复：反转字节顺序 ★★★
+                                # 将hex字符串按字节对分组，然后反转顺序
+                                byte_pairs = [hex_str[i:i+2] for i in range(0, len(hex_str), 2)]
+                                reversed_hex = ''.join(reversed(byte_pairs))
+                                decoded = bytes.fromhex(reversed_hex).decode('ascii', errors='ignore').strip('\x00')
                                 if decoded and decoded.isprintable():
                                     device_info['serial'] = decoded
                                 else:
