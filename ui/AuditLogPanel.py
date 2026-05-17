@@ -56,6 +56,8 @@ _ACTION_ZH = {
     "clear_logs":           "清理日志",
     "switch_camera":        "手动切换相机",
     "auto_switch_camera":   "自动切换相机",
+    "camera_connected":     "相机上线",
+    "camera_disconnected":  "相机离线",
 }
 
 

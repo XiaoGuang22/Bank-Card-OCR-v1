@@ -72,10 +72,8 @@ class SaperaCameraManager:
 
         # Sapera SDK 事件处理器引用（用于解绑和调试）
         self._error_handler = None
-        self._server_notify_handler = None
-        self._scan_event_count = 0
 
-        # 注册 Sapera SDK 事件（Error + ServerNotify）
+        # 注册 Sapera SDK 事件（Error）
         self._register_error_handler()
     
     @property
@@ -116,12 +114,11 @@ class SaperaCameraManager:
                 print(f"[SaperaCameraManager] 状态回调异常: {e}")
     
     def _register_error_handler(self):
-        """注册 Sapera SDK 错误处理与事件监听
+        """注册 Sapera SDK 错误处理
 
-        三个层面：
+        两个层面：
         1. DisplayStatusMode → Event/Log 模式，抑制 SDK 弹窗
         2. SapManager.Error → 集中捕获所有 SDK 错误（替代每个操作单独 try/except）
-        3. SapManager.ServerNotify → 异步接收新相机上线/下线通知
         """
         if not SAPERA_AVAILABLE:
             return
@@ -154,41 +151,34 @@ class SaperaCameraManager:
                     err_msg = str(args)
                 print(f"[Sapera Error] {err_msg}")
 
-            SapManager.Error += _on_sapera_error
-            self._error_handler = _on_sapera_error
-            print("[Sapera] Error 事件已注册（FC-10）")
+            # 尝试多种方式注册事件
+            try:
+                # 方法1：直接绑定
+                SapManager.Error += _on_sapera_error
+                self._error_handler = _on_sapera_error
+                print("[Sapera] Error 事件已注册（FC-10）- 方法1")
+            except Exception as e1:
+                try:
+                    # 方法2：使用 add_ 前缀
+                    SapManager.add_Error(_on_sapera_error)
+                    self._error_handler = _on_sapera_error
+                    print("[Sapera] Error 事件已注册（FC-10）- 方法2")
+                except Exception as e2:
+                    # 方法3：使用 SetErrorHandler（如果SDK支持）
+                    try:
+                        SapManager.SetErrorHandler(_on_sapera_error)
+                        self._error_handler = _on_sapera_error
+                        print("[Sapera] Error 事件已注册（FC-10）- 方法3")
+                    except Exception as e3:
+                        self._error_handler = None
+                        print(f"[Sapera] Error 事件注册失败（所有方法都失败）:")
+                        print(f"  方法1: {e1}")
+                        print(f"  方法2: {e2}")
+                        print(f"  方法3: {e3}")
+                        print(f"[Sapera] 将使用 Python try/except 代替事件捕获")
         except Exception as e:
             self._error_handler = None
-            print(f"[Sapera] Error 事件注册失败（Python 绑定限制）: {e}")
-
-        # ---- 3. 注册 ServerNotify 事件（FC-08） ----
-        # 异步推送：新相机上线 / 已在线相机下线
-        try:
-            # 初始化扫描计数（用于 SCAN_DONE 事件去重）
-            self._scan_event_count = 0
-
-            def _on_server_notify(sender, args):
-                try:
-                    event_type = str(args.EventType) if hasattr(args, 'EventType') else ''
-                    server_name = str(args.ServerName) if hasattr(args, 'ServerName') else str(args)
-
-                    # 过滤非设备事件
-                    if 'SCAN_DONE' in event_type.upper():
-                        self._scan_event_count += 1
-                        if self._scan_event_count % 10 == 0:
-                            print(f"[Sapera ServerNotify] 扫描完成事件 #{self._scan_event_count}")
-                        return
-
-                    print(f"[Sapera ServerNotify] {event_type}: {server_name}")
-                except Exception:
-                    pass
-
-            SapManager.ServerNotify += _on_server_notify
-            self._server_notify_handler = _on_server_notify
-            print("[Sapera] ServerNotify 事件已注册（FC-08）")
-        except Exception as e:
-            self._server_notify_handler = None
-            print(f"[Sapera] ServerNotify 事件注册失败（Python 绑定限制）: {e}")
+            print(f"[Sapera] Error 事件注册异常: {e}")
     
     def connect(self, camera_info: 'SaperaCameraInfo') -> tuple[bool, str]:
         """
@@ -434,18 +424,56 @@ class SaperaCameraManager:
                 
                 return True, f"成功切换到 {target_camera.formatted_display_name}"
             else:
-                # 切换失败，尝试回退
-                if self._last_successful_camera and self._last_successful_camera != target_camera:
-                    print(f"[SaperaCameraManager] 切换失败，尝试回退到: {self._last_successful_camera.formatted_display_name}")
-                    fallback_success = cam_ctrl.switch_to(self._last_successful_camera.server_name)
-                    if fallback_success:
-                        from camera.camera_info_model import CameraConnectionStatus
-                        self._notify_state_change(CameraConnectionStatus.CONNECTED, self._last_successful_camera)
-                        return False, f"切换失败，已自动回退到 {self._last_successful_camera.formatted_display_name}"
+                # ★★★ FC-10: 切换失败，尝试回退到上一个成功的相机 ★★★
+                print(f"[SaperaCameraManager] 切换到 {target_camera.formatted_display_name} 失败")
                 
-                from camera.camera_info_model import CameraConnectionStatus
-                self._notify_state_change(CameraConnectionStatus.ERROR)
-                return False, f"切换失败: 无法连接到 {target_camera.server_name}"
+                if self._last_successful_camera and self._last_successful_camera != target_camera:
+                    print(f"[SaperaCameraManager] 尝试回退到上次成功的相机: {self._last_successful_camera.formatted_display_name}")
+                    
+                    try:
+                        fallback_success = cam_ctrl.switch_to(self._last_successful_camera.server_name)
+                        
+                        if fallback_success:
+                            # 回退成功
+                            self._current_camera = self._last_successful_camera
+                            self._connected = True
+                            
+                            from camera.camera_info_model import CameraConnectionStatus
+                            self._notify_state_change(CameraConnectionStatus.CONNECTED, self._last_successful_camera)
+                            
+                            print(f"[SaperaCameraManager] ✓ 回退成功: {self._last_successful_camera.formatted_display_name}")
+                            return False, f"切换到 {target_camera.formatted_display_name} 失败，已自动恢复到 {self._last_successful_camera.formatted_display_name}"
+                        else:
+                            # 回退也失败
+                            print(f"[SaperaCameraManager] ✗ 回退失败: {self._last_successful_camera.formatted_display_name}")
+                            self._current_camera = None
+                            self._connected = False
+                            
+                            from camera.camera_info_model import CameraConnectionStatus
+                            self._notify_state_change(CameraConnectionStatus.ERROR)
+                            
+                            return False, f"切换失败且无法恢复连接，请手动选择相机"
+                            
+                    except Exception as e:
+                        # 回退过程异常
+                        print(f"[SaperaCameraManager] 回退过程异常: {e}")
+                        self._current_camera = None
+                        self._connected = False
+                        
+                        from camera.camera_info_model import CameraConnectionStatus
+                        self._notify_state_change(CameraConnectionStatus.ERROR)
+                        
+                        return False, f"切换失败且恢复过程异常: {e}"
+                else:
+                    # 没有上次成功的相机可以回退
+                    print(f"[SaperaCameraManager] 没有可回退的相机")
+                    self._current_camera = None
+                    self._connected = False
+                    
+                    from camera.camera_info_model import CameraConnectionStatus
+                    self._notify_state_change(CameraConnectionStatus.ERROR)
+                    
+                    return False, f"切换到 {target_camera.formatted_display_name} 失败"
                 
         except Exception as e:
             from camera.camera_info_model import CameraConnectionStatus

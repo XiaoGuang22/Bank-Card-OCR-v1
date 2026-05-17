@@ -493,6 +493,8 @@ class CameraStatusBar(tk.Frame):
         if self._destroyed:
             return
         
+        print(f"[CameraStatusBar] _on_scan_complete 被调用，相机数量: {len(sapera_cameras)}")
+        
         # 线程安全的UI更新
         try:
             self.after_idle(lambda: self._safe_update_camera_list(sapera_cameras))
@@ -579,6 +581,8 @@ class CameraStatusBar(tk.Frame):
         4. 如果不存在，添加到列表
         5. ★★★ 注意：不自动添加当前连接的相机，只使用扫描结果 ★★★
         """
+        print(f"[CameraStatusBar] _update_camera_list 被调用，相机数量: {len(cameras)}")
+        
         # 创建一个字典，用于快速查找和去重（基于 server_name）
         camera_dict = {}
         
@@ -601,6 +605,7 @@ class CameraStatusBar(tk.Frame):
         
         # 转换为列表
         self._camera_list = list(camera_dict.values())
+        print(f"[CameraStatusBar] 去重后的相机列表数量: {len(self._camera_list)}")
         
         # 获取当前连接的相机（用于判断选中项）
         current = self._manager.current_camera or self._sapera_manager.current_camera
@@ -611,6 +616,8 @@ class CameraStatusBar(tk.Frame):
             for camera in self._camera_list:            # 遍历扫描结果中的相机
                 name = self._get_camera_display_name(camera)     # 获取相机的显示名称
                 names.append(name)
+            
+            print(f"[CameraStatusBar] 更新下拉框，显示名称列表: {names}")
             
             # 完整替换列表
             self._combo["values"] = names
@@ -628,6 +635,7 @@ class CameraStatusBar(tk.Frame):
                 self._combo_var.set(names[0])
         else:
             # ★★★ 扫描结果为空，显示"无可用相机" ★★★
+            print(f"[CameraStatusBar] 扫描结果为空，显示'无可用相机'")
             self._combo["values"] = ["无可用相机"]
             self._combo_var.set("无可用相机")
         
