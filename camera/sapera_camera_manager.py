@@ -69,8 +69,13 @@ class SaperaCameraManager:
         
         # 状态回调列表
         self._state_callbacks = []
-        
-        # 错误处理
+
+        # Sapera SDK 事件处理器引用（用于解绑和调试）
+        self._error_handler = None
+        self._server_notify_handler = None
+        self._scan_event_count = 0
+
+        # 注册 Sapera SDK 事件（Error + ServerNotify）
         self._register_error_handler()
     
     @property
@@ -111,31 +116,79 @@ class SaperaCameraManager:
                 print(f"[SaperaCameraManager] 状态回调异常: {e}")
     
     def _register_error_handler(self):
-        """注册 Sapera SDK 错误处理"""
+        """注册 Sapera SDK 错误处理与事件监听
+
+        三个层面：
+        1. DisplayStatusMode → Event/Log 模式，抑制 SDK 弹窗
+        2. SapManager.Error → 集中捕获所有 SDK 错误（替代每个操作单独 try/except）
+        3. SapManager.ServerNotify → 异步接收新相机上线/下线通知
+        """
         if not SAPERA_AVAILABLE:
             return
-        
+
+        from System import Enum
+
+        # ---- 1. 设置错误显示模式（抑制 SDK 弹窗） ----
         try:
-            # 设置错误事件处理 - 修复枚举转换问题
-            from System import Enum
-            # 使用正确的枚举值转换
+            SapManager.DisplayStatusMode = Enum.ToObject(
+                type(SapManager.DisplayStatusMode), 1
+            )  # StatusMode.Event
+        except Exception:
             try:
-                SapManager.DisplayStatusMode = Enum.ToObject(type(SapManager.DisplayStatusMode), 1)  # StatusMode.Event
-            except:
-                # 如果枚举转换失败，尝试直接设置为 Log 模式（不显示对话框）
+                SapManager.DisplayStatusMode = Enum.ToObject(
+                    type(SapManager.DisplayStatusMode), 2
+                )  # StatusMode.Log
+            except Exception:
                 try:
-                    SapManager.DisplayStatusMode = Enum.ToObject(type(SapManager.DisplayStatusMode), 2)  # StatusMode.Log
-                except:
+                    SapManager.DisplayStatusMode = 2
+                except Exception:
                     pass
-            
-            # 注意：Python 绑定可能不支持事件注册，这里仅设置模式
+
+        # ---- 2. 注册 SapManager.Error 事件（FC-10） ----
+        # 统一捕获 SDK 层所有异常，避免分散的 try/except
+        try:
+            def _on_sapera_error(sender, args):
+                try:
+                    err_msg = str(args.Message) if hasattr(args, 'Message') else str(args)
+                except Exception:
+                    err_msg = str(args)
+                print(f"[Sapera Error] {err_msg}")
+
+            SapManager.Error += _on_sapera_error
+            self._error_handler = _on_sapera_error
+            print("[Sapera] Error 事件已注册（FC-10）")
         except Exception as e:
-            print(f"[SaperaCameraManager] 注册错误处理失败: {e}")
-            # 如果枚举转换失败，尝试直接设置
-            try:
-                SapManager.DisplayStatusMode = 2  # Log模式，不显示对话框
-            except:
-                pass
+            self._error_handler = None
+            print(f"[Sapera] Error 事件注册失败（Python 绑定限制）: {e}")
+
+        # ---- 3. 注册 ServerNotify 事件（FC-08） ----
+        # 异步推送：新相机上线 / 已在线相机下线
+        try:
+            # 初始化扫描计数（用于 SCAN_DONE 事件去重）
+            self._scan_event_count = 0
+
+            def _on_server_notify(sender, args):
+                try:
+                    event_type = str(args.EventType) if hasattr(args, 'EventType') else ''
+                    server_name = str(args.ServerName) if hasattr(args, 'ServerName') else str(args)
+
+                    # 过滤非设备事件
+                    if 'SCAN_DONE' in event_type.upper():
+                        self._scan_event_count += 1
+                        if self._scan_event_count % 10 == 0:
+                            print(f"[Sapera ServerNotify] 扫描完成事件 #{self._scan_event_count}")
+                        return
+
+                    print(f"[Sapera ServerNotify] {event_type}: {server_name}")
+                except Exception:
+                    pass
+
+            SapManager.ServerNotify += _on_server_notify
+            self._server_notify_handler = _on_server_notify
+            print("[Sapera] ServerNotify 事件已注册（FC-08）")
+        except Exception as e:
+            self._server_notify_handler = None
+            print(f"[Sapera] ServerNotify 事件注册失败（Python 绑定限制）: {e}")
     
     def connect(self, camera_info: 'SaperaCameraInfo') -> tuple[bool, str]:
         """
