@@ -12,7 +12,7 @@
 - 管理员/技术员：所有控件可用
 - 操作员：下拉框、刷新、切换按钮全部禁用，仅显示状态灯和信息文本
 
-集成增强的相机发现和切换功能，支持 Sapera SDK 和网络相机。
+集成增强的相机发现和切换功能，支持 Sapera SDK。
 """
 
 import tkinter as tk
@@ -187,8 +187,8 @@ class CameraStatusBar(tk.Frame):
         # 找到对应的相机信息
         target = None
         for camera in self._camera_list:        # 遍历所有相机
-            # 支持 Sapera 相机和网络相机的显示名称匹配
-            display_name = getattr(camera, 'formatted_display_name', None) or getattr(camera, 'display_name', str(camera))  # 优先使用格式化显示名称
+            # 获取 Sapera 相机的显示名称
+            display_name = getattr(camera, 'formatted_display_name', None) or getattr(camera, 'display_name', str(camera))
             if display_name == selected:        # 匹配成功名称
                 target = camera                  # 记录目标相机信息
                 break
@@ -197,29 +197,26 @@ class CameraStatusBar(tk.Frame):
             messagebox.showwarning("切换相机", "未找到所选相机信息", parent=self)
             return
 
-        # ★★★ 修复：根据目标相机类型选择正确的管理器 ★★★
-        # 判断目标是 Sapera 相机还是网络相机
-        is_sapera_target = hasattr(target, 'server_name') and target.server_name
-        
-        # 获取当前相机（从正确的管理器）
-        if is_sapera_target:
-            current = self._sapera_manager.current_camera
-        else:
-            current = self._manager.current_camera
+        # 获取当前连接的 Sapera 相机
+        current = self._sapera_manager.current_camera
         
         # 添加调试信息
         print(f"[CameraStatusBar] 切换相机检查:")
         print(f"  当前相机: {current}")
         print(f"  目标相机: {target}")
         if current:
+            print(f"============================================================")
             print(f"  当前相机 server_name: {getattr(current, 'server_name', 'N/A')}")
             print(f"  当前相机 display_name: {getattr(current, 'display_name', 'N/A')}")
             print(f"  当前相机 formatted_display_name: {getattr(current, 'formatted_display_name', 'N/A')}")
+            print(f"============================================================")
         if target:
+            print(f"============================================================")
             print(f"  目标相机 server_name: {getattr(target, 'server_name', 'N/A')}")
             print(f"  目标相机 display_name: {getattr(target, 'display_name', 'N/A')}")
             print(f"  目标相机 formatted_display_name: {getattr(target, 'formatted_display_name', 'N/A')}")
         print(f"  相等性检查: {current == target if current else 'current is None'}")
+        print(f"============================================================")
         
         if current and current == target:
             messagebox.showinfo("切换相机", "已是当前连接的相机，无需切换", parent=self)
