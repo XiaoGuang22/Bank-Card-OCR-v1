@@ -154,6 +154,8 @@ class SaperaCameraDiscovery:
         self._event_registered = False
         # ★★★ 新增：缓存已获取的设备信息，避免重复创建设备 ★★★
         self._device_info_cache: Dict[str, Dict] = {}
+        # 扫描过程中的警告信息（仅在扫描不到相机时输出）
+        self._scan_warnings: List[str] = []
         
     @property
     def is_scanning(self) -> bool:
@@ -213,7 +215,8 @@ class SaperaCameraDiscovery:
         """执行实际的扫描操作"""
         try:
             found_cameras = []
-            
+            self._scan_warnings = []  # 清空上次的警告，重新收集
+
             # ★★★ 清空上次的扫描结果，避免显示已断开的相机 ★★★
             self._last_results = []
             
@@ -257,8 +260,8 @@ class SaperaCameraDiscovery:
                             from DALSA.SaperaLT.SapClassBasic import ResourceType
                             resource_count = SapManager.GetResourceCount(server_name, ResourceType.AcqDevice)
                         except Exception as e2:
-                            print(f"获取资源数量失败: {e1}, {e2}")
-                            resource_count = 1  # 默认为1
+                            self._scan_warnings.append(f"GetResourceCount 失败 (server={server_name}): 第一种方式={e1}, 第二种方式={e2}")
+                            resource_count = 1  # SDK版本差异，使用默认值
                     
                     # 先获取设备详细信息（优先使用缓存）
                     device_info = self._get_device_info_cached(server_name, i)
@@ -360,7 +363,13 @@ class SaperaCameraDiscovery:
             # 4. 按服务器名称排序
             found_cameras.sort(key=lambda x: x.server_name)
             self._last_results = found_cameras
-            
+
+            # 只有真正扫描不到相机时，才输出过程中收集的警告信息
+            if not found_cameras and self._scan_warnings:
+                print(f"[Sapera] 扫描未发现相机，过程中有以下异常:")
+                for w in self._scan_warnings:
+                    print(f"  - {w}")
+
             if on_complete:
                 on_complete(found_cameras)
                 
@@ -391,7 +400,7 @@ class SaperaCameraDiscovery:
                     from DALSA.SaperaLT.SapClassBasic import DetectServerType
                     SapManager.DetectAllServers(DetectServerType.GenCP)
                 except Exception as e2:
-                    print(f"DetectAllServers 调用失败: {e1}, {e2}")
+                    self._scan_warnings.append(f"DetectAllServers 失败: 第一种方式={e1}, 第二种方式={e2}")
             
             # 等待一小段时间让检测完成
             time.sleep(0.1)
