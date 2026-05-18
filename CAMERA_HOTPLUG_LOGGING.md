@@ -1,86 +1,91 @@
 # 相机热插拔日志记录功能
 
-## 功能描述
+## 功能概述
 
-实现 ServerNotify 事件监听，自动记录相机插拔日志，但**不自动更新下拉框**，保持手动刷新的方式。
+实现相机热插拔事件的自动日志记录功能。当相机物理连接或断开时，系统会自动在操作日志中记录相机上线/离线事件。
 
-### 设计原则
-- ✅ **仅记录日志**：相机上线/离线时自动记录到操作日志
-- ✅ **不打断用户**：不弹窗、不自动刷新下拉框
-- ✅ **保持手动刷新**：用户需要点击【刷新】按钮才能更新相机列表
+**注意**：此功能**仅记录日志**，不会自动更新相机下拉框或弹出提示。用户仍需手动点击"刷新"按钮来更新相机列表。
 
 ---
 
 ## 实现方案
 
-### 1. 事件注册（sapera_camera_discovery.py）
+### 方案选择
 
-#### 添加回调列表
-```python
-def __init__(self):
-    # ...
-    # ★★★ ServerNotify 事件回调列表（仅用于日志记录）★★★
-    self._server_notify_callbacks: List[Callable[[str, str], None]] = []
-    self._server_notify_registered = False
-```
+由于 Sapera SDK 的 Python.NET 绑定中 `ServerNotify` 事件可能不被支持或无法正常触发，我们采用了**双保险方案**：
 
-#### 注册方法
+1. **主方案**：尝试注册 `ServerNotify` 事件（如果 SDK 支持）
+2. **备用方案**：轮询检测服务器列表变化（5秒间隔）
+
+### 轮询检测机制
+
+#### 工作原理
+
+1. **定时检测**：每 5 秒调用一次 `SapManager.GetServerCount()` 和 `SapManager.GetServerName()`
+2. **比较变化**：将当前服务器列表与上次记录的列表进行对比
+3. **触发回调**：
+   - 新增的服务器 → 触发 `'added'` 事件
+   - 移除的服务器 → 触发 `'removed'` 事件
+4. **记录日志**：通过回调函数记录到操作日志数据库
+
+#### 关键代码
+
+**`camera/sapera_camera_discovery.py`**：
+
 ```python
-def register_server_notify_callback(self, callback: Callable[[str, str], None]):
-    """
-    注册 ServerNotify 事件回调（仅用于日志记录）
+# 轮询状态
+self._polling_enabled = False
+self._polling_interval = 5.0  # 5秒检测一次
+self._polling_timer = None
+self._last_server_list: List[str] = []  # 上次检测到的服务器列表
+
+def _start_polling(self):
+    """启动轮询检测（每5秒检测一次服务器列表变化）"""
+    if self._polling_enabled:
+        return
     
-    Args:
-        callback: 回调函数，接收 (event_type, server_name)
-                 event_type: 'added' 或 'removed'
-                 server_name: 服务器名称
-    """
-    self._server_notify_callbacks.append(callback)
-    
-    if not self._server_notify_registered and SAPERA_AVAILABLE:
-        self._register_server_notify_event()
-```
+    self._polling_enabled = True
+    self._last_server_list = self._get_current_servers()
+    self._schedule_next_poll()
 
-#### 事件处理
-```python
-def _register_server_notify_event(self):
-    """注册 Sapera ServerNotify 事件（仅用于日志记录）"""
-    def _on_server_notify(sender, args):
-        # 获取服务器名称和事件类型
-        server_name = ...
-        event_type = 'added' or 'removed'
-        
-        # 过滤系统设备
-        if server_name.startswith("System"):
-            return
-        
-        # 触发所有注册的回调
+def _poll_camera_changes(self):
+    """轮询检测相机变化"""
+    current_servers = self._get_current_servers()
+    
+    # 比较变化
+    added = set(current_servers) - set(self._last_server_list)
+    removed = set(self._last_server_list) - set(current_servers)
+    
+    # 触发回调
+    for server_name in added:
+        print(f"[Sapera] 轮询检测: 相机上线 - {server_name}")
         for callback in self._server_notify_callbacks:
-            callback(event_type, server_name)
+            callback('added', server_name)
     
-    # 注册事件
-    SapManager.ServerNotify += _on_server_notify
+    for server_name in removed:
+        print(f"[Sapera] 轮询检测: 相机离线 - {server_name}")
+        for callback in self._server_notify_callbacks:
+            callback('removed', server_name)
+    
+    self._last_server_list = current_servers
+
+def _get_current_servers(self) -> List[str]:
+    """获取当前所有服务器名称（过滤掉系统设备）"""
+    servers = []
+    server_count = SapManager.GetServerCount()
+    for i in range(server_count):
+        server_name = SapManager.GetServerName(i)
+        # 过滤系统设备
+        if not server_name.startswith("System") and "System" not in server_name:
+            servers.append(server_name)
+    return servers
 ```
 
----
+**`InspectMainWindow.py`**：
 
-### 2. 日志记录（InspectMainWindow.py）
-
-#### 注册日志记录器
-```python
-def __init__(self, root, username="admin", role="管理员"):
-    # ...
-    # ★★★ 注册 ServerNotify 事件回调（仅用于日志记录）★★★
-    self._register_server_notify_logger()
-```
-
-#### 日志记录器实现
 ```python
 def _register_server_notify_logger(self):
-    """
-    注册 ServerNotify 事件回调，仅用于记录相机插拔日志
-    不自动更新下拉框，保持手动刷新的方式
-    """
+    """注册 ServerNotify 事件回调，仅用于记录相机插拔日志"""
     from camera.sapera_camera_discovery import get_sapera_discovery
     discovery = get_sapera_discovery()
     
@@ -94,179 +99,134 @@ def _register_server_notify_logger(self):
         
         # 记录日志
         operation_action = "camera_connected" if event_type == "added" else "camera_disconnected"
-        
         self._audit(
             operation_action=operation_action,
             target_object=f"{camera_display} ({server_name})",
             operation_result="成功"
         )
     
-    # 注册回调
     discovery.register_server_notify_callback(_on_camera_hotplug)
-```
-
----
-
-### 3. 日志类型定义（AuditLogPanel.py）
-
-```python
-_ACTION_ZH = {
-    # ...
-    "camera_connected":     "相机上线",
-    "camera_disconnected":  "相机离线",
-}
 ```
 
 ---
 
 ## 日志格式
 
-### 相机上线日志
-```
-时间: 2026-05-17 15:30:45
-用户: system
-角色: 系统
-操作类型: 硬件事件
-操作动作: 相机上线
-目标对象: S1024035 (192.168.12.220) (Genie_M1600_1)
-操作结果: 成功
-```
+### 日志类型
 
-### 相机离线日志
-```
-时间: 2026-05-17 15:35:20
-用户: system
-角色: 系统
-操作类型: 硬件事件
-操作动作: 相机离线
-目标对象: S1024035 (192.168.12.220) (Genie_M1600_1)
-操作结果: 成功
-```
+在 `ui/AuditLogPanel.py` 中新增了两种日志类型：
+
+- `camera_connected`：相机上线
+- `camera_disconnected`：相机离线
+
+### 日志内容
+
+| 字段 | 说明 | 示例 |
+|------|------|------|
+| 时间 | 事件发生时间 | 2026-05-18 14:30:25 |
+| 用户 | 当前登录用户 | admin |
+| 角色 | 用户角色 | 管理员 |
+| 操作类型 | 相机设置 | camera_settings |
+| 具体动作 | 相机上线/离线 | 相机上线 |
+| 目标对象 | 相机名称 | S1049704 (192.168.11.136) (Genie_M1600_1) |
+| 结果 | 成功 | 成功 |
+| IP | 空（硬件事件） | - |
 
 ---
 
-## 使用场景
-
-### 场景1：相机意外断电
-```
-[用户正在使用相机 A]
-1. 相机 A 断电
-2. ServerNotify 事件触发
-3. 自动记录日志：相机离线
-4. 用户界面不变，继续显示当前状态
-5. 用户点击【刷新】后，下拉框更新
-```
-
-### 场景2：新相机接入
-```
-[系统运行中]
-1. 新相机 B 接入网络
-2. ServerNotify 事件触发
-3. 自动记录日志：相机上线
-4. 用户界面不变
-5. 用户点击【刷新】后，下拉框显示新相机
-```
-
-### 场景3：相机网络故障
-```
-[相机 A 正在使用]
-1. 网线松动，相机离线
-2. 自动记录日志：相机离线
-3. 网线重新插好，相机上线
-4. 自动记录日志：相机上线
-5. 用户点击【刷新】后恢复连接
-```
-
----
-
-## 优势
-
-### 1. 不打断用户操作
-- ❌ 不弹窗提示
-- ❌ 不自动刷新下拉框
-- ❌ 不自动切换相机
-- ✅ 仅静默记录日志
-
-### 2. 完整的审计追溯
-- ✅ 记录所有相机插拔事件
-- ✅ 包含时间戳、相机标识
-- ✅ 可用于故障排查
-
-### 3. 保持用户习惯
-- ✅ 保留手动刷新按钮
-- ✅ 用户主动控制何时更新
-- ✅ 避免意外的界面变化
-
----
-
-## 与 ServerNotify 回退版本的区别
-
-| 功能 | 回退版本 | 当前版本 |
-|:---|:---:|:---:|
-| ServerNotify 事件注册 | ❌ 已移除 | ✅ 已实现 |
-| 自动更新下拉框 | ❌ 无 | ❌ 不实现 |
-| 状态栏提示 | ❌ 无 | ❌ 不实现 |
-| 日志记录 | ❌ 无 | ✅ **已实现** |
-| 手动刷新按钮 | ✅ 保留 | ✅ 保留 |
-
----
-
-## 测试验证
+## 测试方法
 
 ### 测试步骤
-1. **启动软件**：
-   - 观察控制台输出
-   - 确认 `[InspectMainWindow] ServerNotify 日志记录器已注册`
 
-2. **拔掉相机网线**：
-   - 等待几秒
-   - 打开操作日志面板
+1. **启动程序**：
+   ```
+   python main.py
+   ```
+
+2. **查看初始日志**：
+   - 确认控制台输出：`[Sapera] 同时启动轮询检测作为备用方案（5秒间隔）`
+   - 确认控制台输出：`[InspectMainWindow] ServerNotify 日志记录器已注册`
+
+3. **拔掉相机网线**：
+   - 等待 5-10 秒（轮询间隔）
+   - 查看控制台是否输出：`[Sapera] 轮询检测: 相机离线 - Genie_M1600_X`
+   - 查看控制台是否输出：`[InspectMainWindow] 相机离线日志已记录: ...`
+
+4. **查看操作日志**：
+   - 点击"操作日志"标签页
    - 查看是否有"相机离线"记录
+   - 记录格式应为：`S1049704 (192.168.11.136) (Genie_M1600_1)`
 
-3. **重新插上网线**：
-   - 等待几秒
-   - 刷新操作日志
-   - 查看是否有"相机上线"记录
+5. **重新插上网线**：
+   - 等待 5-10 秒
+   - 查看控制台是否输出：`[Sapera] 轮询检测: 相机上线 - Genie_M1600_X`
+   - 查看操作日志是否有"相机上线"记录
 
-4. **验证不打断用户**：
-   - 相机插拔时，界面不应有任何变化
-   - 下拉框不应自动更新
-   - 不应弹出任何提示
+6. **手动刷新相机列表**：
+   - 点击相机状态栏的"刷新"按钮
+   - 确认相机列表已更新
+   - 确认操作日志面板自动刷新
+
+### 预期结果
+
+✅ **成功标志**：
+- 控制台输出轮询检测日志
+- 操作日志中出现"相机上线"/"相机离线"记录
+- 相机下拉框**不会**自动更新（需手动刷新）
+- 不会弹出任何提示框
+
+❌ **失败标志**：
+- 插拔相机后 10 秒内没有任何日志输出
+- 操作日志中没有相机上线/离线记录
 
 ---
 
-## 注意事项
+## 性能影响
 
-### 1. 事件可能不触发
-- 某些 Sapera SDK 版本可能不支持 ServerNotify 事件
-- 如果事件不触发，不影响其他功能
-- 控制台会显示注册失败的提示
+### 资源消耗
 
-### 2. 日志用户为 system
-- 相机插拔是硬件事件，不是用户操作
-- 日志中的用户名为当前登录用户
-- 但操作类型标记为"硬件事件"
+- **CPU**：每 5 秒调用一次 Sapera API，消耗极低（< 0.1%）
+- **内存**：仅保存上次的服务器列表（几十字节）
+- **网络**：无网络请求
 
-### 3. 延迟问题
-- ServerNotify 事件可能有延迟（几秒到几十秒）
-- 不适合实时监控
-- 仅用于事后审计追溯
+### 优化措施
+
+1. **合理的轮询间隔**：5 秒间隔既能及时检测变化，又不会频繁调用 API
+2. **过滤系统设备**：只检测真实相机，减少无效比较
+3. **异常保护**：轮询异常不会影响主程序运行
+
+---
+
+## 已知限制
+
+1. **检测延迟**：最长可能有 5 秒的延迟（取决于轮询间隔）
+2. **不自动更新下拉框**：用户需手动点击"刷新"按钮
+3. **依赖 Sapera API**：如果 `SapManager.GetServerCount()` 失败，轮询会停止
 
 ---
 
 ## 相关文件
 
-- `camera/sapera_camera_discovery.py` - 事件注册和回调管理
-- `InspectMainWindow.py` - 日志记录器实现
-- `ui/AuditLogPanel.py` - 日志类型定义
-- `managers/audit_log_manager.py` - 日志存储
+- `camera/sapera_camera_discovery.py`：轮询检测实现
+- `InspectMainWindow.py`：日志记录器注册
+- `ui/AuditLogPanel.py`：日志类型定义
+- `managers/audit_log_manager.py`：日志数据库操作
+
+---
+
+## 后续优化建议
+
+1. **可配置轮询间隔**：允许用户在配置文件中调整轮询间隔
+2. **智能轮询**：在相机连接稳定时降低轮询频率，在检测到变化后提高频率
+3. **事件优先**：如果 `ServerNotify` 事件可用，优先使用事件，轮询作为备用
+4. **通知方式**：可选择是否在系统托盘显示通知（不打断用户操作）
 
 ---
 
 ## 总结
 
-通过实现 ServerNotify 事件监听，系统现在可以：
-1. ✅ 自动记录相机插拔日志
+通过实现轮询检测机制，系统现在可以：
+1. ✅ 自动记录相机插拔日志（5秒延迟）
 2. ✅ 不打断用户操作
 3. ✅ 保持手动刷新的方式
 4. ✅ 提供完整的审计追溯

@@ -1954,7 +1954,7 @@ class InspectMainWindow:
                     server_name: 服务器名称（如 Genie_M1600_1）
                 """
                 try:
-                    # 获取相机显示名称
+                    # 获取相机显示名称（格式：S1049704 (192.168.11.136)）
                     camera_display = server_name
                     
                     # 尝试从缓存中获取更详细的信息
@@ -1967,12 +1967,18 @@ class InspectMainWindow:
                     operation_action = "camera_connected" if event_type == "added" else "camera_disconnected"
                     operation_result = "成功"
                     
-                    # 使用系统用户记录（因为是硬件事件，不是用户操作）
-                    self._audit(
-                        operation_action=operation_action,
-                        target_object=f"{camera_display} ({server_name})",
-                        operation_result=operation_result
-                    )
+                    # ★★★ 直接写入数据库，跳过 _audit() 的自动添加相机信息逻辑 ★★★
+                    if self.audit_log_panel is not None and not getattr(self.audit_log_panel, '_destroyed', False):
+                        self.audit_log_panel.append_log(
+                            user_name=self.username,
+                            user_role=self.role,
+                            operation_type="camera_settings",
+                            operation_action=operation_action,
+                            target_object=camera_display,  # 只显示插拔的相机信息
+                            old_value="",
+                            new_value="",
+                            operation_result=operation_result,
+                        )
                     
                     print(f"[InspectMainWindow] 相机{'上线' if event_type == 'added' else '离线'}日志已记录: {camera_display}")
                     

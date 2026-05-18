@@ -161,6 +161,12 @@ class SaperaCameraDiscovery:
         self._server_notify_callbacks: List[Callable[[str, str], None]] = []
         self._server_notify_registered = False
         
+        # ★★★ 轮询检测机制（ServerNotify 的备用方案）★★★
+        self._polling_enabled = False
+        self._polling_interval = 5.0  # 5秒检测一次
+        self._polling_timer = None
+        self._last_server_list: List[str] = []  # 上次检测到的服务器列表
+        
     @property
     def is_scanning(self) -> bool:
         return self._scanning
@@ -188,6 +194,15 @@ class SaperaCameraDiscovery:
         # 如果还没注册事件，现在注册
         if not self._server_notify_registered and SAPERA_AVAILABLE:
             self._register_server_notify_event()
+            
+            # ★★★ 如果 ServerNotify 事件注册失败，启动轮询作为备用方案 ★★★
+            if not self._server_notify_registered:
+                print("[Sapera] ServerNotify 事件不可用，启动轮询检测（5秒间隔）")
+                self._start_polling()
+            else:
+                # 即使事件注册成功，也启动轮询作为双保险（某些SDK版本事件不触发）
+                print("[Sapera] 同时启动轮询检测作为备用方案（5秒间隔）")
+                self._start_polling()
     
     def _register_server_notify_event(self):
         """注册 Sapera ServerNotify 事件（仅用于日志记录）"""
@@ -758,6 +773,142 @@ class SaperaCameraDiscovery:
         else:
             self._device_info_cache.clear()
             print(f"[Sapera] 已清除所有设备缓存")
+    
+    # ============================================================================
+    # 轮询检测机制（ServerNotify 的备用方案）
+    # ============================================================================
+    
+    def _start_polling(self):
+        """启动轮询检测（每5秒检测一次服务器列表变化）"""
+        if self._polling_enabled:
+            return  # 已经在轮询中
+        
+        self._polling_enabled = True
+        self._last_server_list = self._get_accessible_servers()  # ★★★ 使用可访问服务器列表 ★★★
+        
+        # 启动定时器
+        self._schedule_next_poll()
+    
+    def _stop_polling(self):
+        """停止轮询检测"""
+        self._polling_enabled = False
+        if self._polling_timer:
+            try:
+                self._polling_timer.cancel()
+            except:
+                pass
+            self._polling_timer = None
+    
+    def _schedule_next_poll(self):
+        """调度下一次轮询"""
+        if not self._polling_enabled:
+            return
+        
+        self._polling_timer = threading.Timer(
+            self._polling_interval,
+            self._poll_camera_changes
+        )
+        self._polling_timer.daemon = True
+        self._polling_timer.start()
+    
+    def _poll_camera_changes(self):
+        """轮询检测相机变化"""
+        if not self._polling_enabled:
+            return
+        
+        try:
+            # 获取当前服务器列表（只包含可访问的服务器）
+            current_servers = self._get_accessible_servers()
+            
+            # 比较变化
+            added = set(current_servers) - set(self._last_server_list)
+            removed = set(self._last_server_list) - set(current_servers)
+            
+            # 触发回调
+            for server_name in added:
+                print(f"[Sapera] 轮询检测: 相机上线 - {server_name}")
+                for callback in self._server_notify_callbacks:
+                    try:
+                        callback('added', server_name)
+                    except Exception as e:
+                        print(f"[Sapera] 轮询回调异常: {e}")
+            
+            for server_name in removed:
+                print(f"[Sapera] 轮询检测: 相机离线 - {server_name}")
+                for callback in self._server_notify_callbacks:
+                    try:
+                        callback('removed', server_name)
+                    except Exception as e:
+                        print(f"[Sapera] 轮询回调异常: {e}")
+            
+            # 更新上次的服务器列表
+            self._last_server_list = current_servers
+            
+        except Exception as e:
+            print(f"[Sapera] 轮询检测异常: {e}")
+        finally:
+            # 调度下一次轮询
+            self._schedule_next_poll()
+    
+    def _get_current_servers(self) -> List[str]:
+        """获取当前所有服务器名称（过滤掉系统设备）"""
+        servers = []
+        try:
+            server_count = SapManager.GetServerCount()
+            for i in range(server_count):
+                server_name = SapManager.GetServerName(i)
+                # 过滤系统设备
+                if not server_name.startswith("System") and "System" not in server_name:
+                    servers.append(server_name)
+        except Exception as e:
+            print(f"[Sapera] 获取服务器列表失败: {e}")
+        
+        return servers
+    
+    def _get_accessible_servers(self) -> List[str]:
+        """
+        获取当前可访问的服务器列表（过滤掉系统设备和不可访问的服务器）
+        
+        这个方法会检查服务器是否真的可访问，而不仅仅是名称存在。
+        用于轮询检测相机的真实连接状态。
+        """
+        accessible_servers = []
+        try:
+            server_count = SapManager.GetServerCount()
+            for i in range(server_count):
+                server_name = SapManager.GetServerName(i)
+                
+                # 过滤系统设备
+                if server_name.startswith("System") or "System" in server_name:
+                    continue
+                
+                # 检查服务器是否可访问
+                is_accessible = False
+                try:
+                    is_accessible = SapManager.IsServerAccessible(i)
+                except Exception:
+                    # 如果 IsServerAccessible 不可用，尝试创建设备来检查
+                    try:
+                        location = SapLocation(server_name, 0)
+                        test_device = SapAcqDevice(location, False)
+                        if test_device.Create():
+                            is_accessible = True
+                            test_device.Destroy()
+                            try:
+                                test_device.Dispose()
+                            except:
+                                pass
+                    except:
+                        is_accessible = False
+                
+                # 只添加可访问的服务器
+                if is_accessible:
+                    accessible_servers.append(server_name)
+                    
+        except Exception as e:
+            print(f"[Sapera] 获取可访问服务器列表失败: {e}")
+        
+        return accessible_servers
 
 
 class SaperaCameraController:
