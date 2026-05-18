@@ -11,15 +11,17 @@
 """
 
 import threading
-from typing import Optional, Callable, TYPE_CHECKING, List, Union
+from typing import Optional, Callable, TYPE_CHECKING, List
 
-from camera.camera_discovery import CameraInfo, DEFAULT_CAMERA_PORT
 from camera.sapera_camera_discovery import (
     SaperaCameraDiscovery, SaperaCameraController, SaperaCameraInfo,
     get_sapera_discovery, get_sapera_controller
 )
 from camera.sapera_camera_manager import get_sapera_camera_manager
 from managers.audit_log_manager import AuditLogManager
+
+# 默认端口常量（用于方案文件兼容）
+DEFAULT_CAMERA_PORT = 5024
 
 if TYPE_CHECKING:
     pass
@@ -60,10 +62,10 @@ class EnhancedCameraManager:
 
         self._state_lock = threading.Lock()
 
-        # 当前连接的相机（可能是Sapera或网络相机）
-        self._current_camera: Optional[Union[SaperaCameraInfo, CameraInfo]] = None
-        # 上一次成功连接的相机（用于失败回退）
-        self._last_successful: Optional[Union[SaperaCameraInfo, CameraInfo]] = None
+        # 当前连接的Sapera相机
+        self._current_camera: Optional[SaperaCameraInfo] = None
+        # 上一次成功连接的Sapera相机（用于失败回退）
+        self._last_successful: Optional[SaperaCameraInfo] = None
         # 连接状态
         self._state: str = ConnectionState.DISCONNECTED
 
@@ -75,7 +77,7 @@ class EnhancedCameraManager:
         # 日志管理器
         self._log = AuditLogManager()
 
-        # 状态变化回调列表：fn(state: str, camera: Optional[Union[SaperaCameraInfo, CameraInfo]])
+        # 状态变化回调列表：fn(state: str, camera: Optional[SaperaCameraInfo])
         self._state_callbacks: list = []
         # 扫描完成回调列表：fn(sapera_cameras: List[SaperaCameraInfo])
         self._scan_callbacks: list = []
@@ -89,7 +91,7 @@ class EnhancedCameraManager:
     # ------------------------------------------------------------------
 
     @property
-    def current_camera(self) -> Optional[Union[SaperaCameraInfo, CameraInfo]]:
+    def current_camera(self) -> Optional[SaperaCameraInfo]:
         return self._current_camera
 
     @property
@@ -123,7 +125,7 @@ class EnhancedCameraManager:
     # 回调注册和配置
     # ------------------------------------------------------------------
 
-    def on_state_change(self, callback: Callable[[str, Optional[Union[SaperaCameraInfo, CameraInfo]]], None]):
+    def on_state_change(self, callback: Callable[[str, Optional[SaperaCameraInfo]], None]):
         """注册连接状态变化回调。callback(state, camera_info)"""
         self._state_callbacks.append(callback)
 
@@ -136,14 +138,14 @@ class EnhancedCameraManager:
         self._sapera_connector = connect_fn
         self._sapera_disconnector = disconnect_fn
 
-    def set_initial_camera(self, camera: Union[SaperaCameraInfo, CameraInfo]):
+    def set_initial_camera(self, camera: SaperaCameraInfo):
         """设置初始已连接的相机"""
         if self._state == ConnectionState.DISCONNECTED and camera:
             self._current_camera = camera
             self._last_successful = camera
             self._notify_state(ConnectionState.CONNECTED, camera)
 
-    def _notify_state(self, state: str, camera: Optional[Union[SaperaCameraInfo, CameraInfo]]):
+    def _notify_state(self, state: str, camera: Optional[SaperaCameraInfo]):
         self._state = state
         for cb in self._state_callbacks:
             try:
@@ -205,7 +207,7 @@ class EnhancedCameraManager:
 
     def switch_camera(
         self,
-        target,
+        target: SaperaCameraInfo,
         user_name: str,
         user_role: str,
         on_result: Optional[Callable[[bool, str, str], None]] = None,
@@ -213,12 +215,8 @@ class EnhancedCameraManager:
         """
         手动切换到目标相机（异步执行）。
 
-        target 可以是：
-          - SaperaCameraInfo：直接使用，跳过匹配步骤
-          - CameraInfo：先用三级优先级在扫描结果中匹配，再切换
-
         Args:
-            target: 目标相机
+            target: 目标Sapera相机
             user_name / user_role: 操作人信息
             on_result: 完成回调 fn(success, message, user_role)
         """
@@ -242,7 +240,7 @@ class EnhancedCameraManager:
 
     def auto_switch_camera(
         self,
-        target,
+        target: SaperaCameraInfo,
         user_name: str,
         user_role: str,
         on_result: Optional[Callable[[bool, str, str], None]] = None,
@@ -251,7 +249,8 @@ class EnhancedCameraManager:
         加载方案时系统自动切换相机（异步执行）。
         与手动切换逻辑相同，仅日志 action 不同。
 
-        target 可以是 SaperaCameraInfo 或 CameraInfo。
+        Args:
+            target: 目标Sapera相机
         """
         if self._current_camera and self._current_camera == target:
             if on_result:
@@ -271,16 +270,9 @@ class EnhancedCameraManager:
     # 核心切换逻辑
     # ------------------------------------------------------------------
 
-    def _match_sapera_camera(self, target: CameraInfo) -> Optional[SaperaCameraInfo]:
-        """
-        从最近一次 Sapera 扫描结果中按三级优先级匹配目标相机。
-        （内部使用，外部请调用 find_matching_sapera_camera）
-        """
-        return self.find_matching_sapera_camera(target)
-
     def _do_switch(
         self,
-        target,
+        target: SaperaCameraInfo,
         user_name: str,
         user_role: str,
         action: str,
@@ -288,102 +280,37 @@ class EnhancedCameraManager:
     ):
         """
         核心切换逻辑：
-        1. 若 target 已是 SaperaCameraInfo，直接使用；
-           否则用三级优先级在扫描结果中匹配，找不到则报失败。
-        2. 委托 SaperaCameraManager.switch_camera() 执行硬件切换。
-        3. 失败时回退到上一次成功的连接。
-        4. 写审计日志，回调传递 user_role（供 UI 区分操作员/管理员行为）。
+        1. 委托 SaperaCameraManager.switch_camera() 执行硬件切换
+        2. 失败时回退到上一次成功的连接
+        3. 写审计日志，回调传递 user_role（供 UI 区分操作员/管理员行为）
         """
-        from camera.sapera_camera_discovery import SaperaCameraInfo as _SCI
-
         old_camera = self._current_camera
         old_ip = ""
         old_display = "无"
         if old_camera:
-            if isinstance(old_camera, _SCI):
-                old_ip = (old_camera.device_info or {}).get("ip_address", "")
-                old_display = old_camera.formatted_display_name
-            else:
-                old_ip = getattr(old_camera, "ip", "")
-                old_display = getattr(old_camera, "display_name", str(old_camera))
+            old_ip = (old_camera.device_info or {}).get("ip_address", "")
+            old_display = old_camera.formatted_display_name
 
         self._notify_state(ConnectionState.CONNECTING, old_camera)
 
-        # ── 步骤 1：解析出 SaperaCameraInfo ──
-        if isinstance(target, _SCI):
-            # 调用方已经做了匹配，直接使用
-            sapera_target = target
-        else:
-            # CameraInfo → 三级优先级匹配（扫描结果中查找）
-            sapera_target = self.find_matching_sapera_camera(target)
-
-            if sapera_target is None:
-                # 扫描结果为空或 device_info 不完整（设备被占用时常见）
-                # 兜底：用 server_name 直接构造最小 SaperaCameraInfo，
-                # 让 SaperaCameraManager.switch_camera → CameraController.switch_to
-                # 凭 server_name 完成硬件切换，不依赖扫描结果
-                server_name = getattr(target, "server_name", "").strip()
-                if server_name:
-                    sapera_target = _SCI(
-                        server_name=server_name,
-                        server_index=0,
-                        resource_count=1,
-                        display_name=getattr(target, "name", "") or server_name,
-                        is_accessible=True,
-                        device_info={
-                            "ip_address": getattr(target, "ip", ""),
-                            "serial":     getattr(target, "serial", ""),
-                            "user_id":    getattr(target, "name", ""),
-                        },
-                    )
-                    print(
-                        f"[CameraManager] 扫描结果中未找到目标相机，"
-                        f"降级为 server_name 直接切换: {server_name}"
-                    )
-                else:
-                    # 连 server_name 都没有，真正无法切换
-                    self._current_camera = old_camera
-                    self._notify_state(
-                        ConnectionState.CONNECTED if old_camera else ConnectionState.FAILED,
-                        old_camera,
-                    )
-                    msg = (
-                        f"无法切换相机：扫描结果为空且方案未记录 server_name"
-                        f"（序列号={getattr(target, 'serial', '')}，"
-                        f"IP={getattr(target, 'ip', '')}）"
-                    )
-                    self._log.log(
-                        user_name=user_name, user_role=user_role,
-                        operation_type="control_settings", operation_action=action,
-                        target_object=f"{old_display} → {getattr(target, 'display_name', str(target))}",
-                        old_value=old_ip, new_value=getattr(target, "ip", ""),
-                        operation_result="失败",
-                    )
-                    if on_result:
-                        try:
-                            on_result(False, msg, user_role)
-                        except TypeError:
-                            on_result(False, msg)
-                    return
-
-        # ── 步骤 2：委托 SaperaCameraManager 执行硬件切换 ──
-        success, message = self._sapera_manager.switch_camera(sapera_target)
+        # ── 执行硬件切换 ──
+        success, message = self._sapera_manager.switch_camera(target)
 
         if success:
             self._last_successful = self._current_camera
-            self._current_camera = sapera_target
-            self._notify_state(ConnectionState.CONNECTED, sapera_target)
+            self._current_camera = target
+            self._notify_state(ConnectionState.CONNECTED, target)
 
             self._log.log(
                 user_name=user_name, user_role=user_role,
                 operation_type="control_settings", operation_action=action,
-                target_object=f"{old_display} → {sapera_target.formatted_display_name}",
+                target_object=f"{old_display} → {target.formatted_display_name}",
                 old_value=old_ip,
-                new_value=(sapera_target.device_info or {}).get("ip_address", ""),
+                new_value=(target.device_info or {}).get("ip_address", ""),
                 operation_result="成功",
             )
         else:
-            # ── 步骤 3：失败回退 ──
+            # ── 失败回退 ──
             fallback = self._last_successful
             if fallback and fallback != old_camera:
                 fb_ok, _ = self._sapera_manager.switch_camera(fallback)
@@ -403,9 +330,9 @@ class EnhancedCameraManager:
             self._log.log(
                 user_name=user_name, user_role=user_role,
                 operation_type="control_settings", operation_action=action,
-                target_object=f"{old_display} → {sapera_target.formatted_display_name}",
+                target_object=f"{old_display} → {target.formatted_display_name}",
                 old_value=old_ip,
-                new_value=(sapera_target.device_info or {}).get("ip_address", ""),
+                new_value=(target.device_info or {}).get("ip_address", ""),
                 operation_result="失败",
             )
 
@@ -434,14 +361,11 @@ class EnhancedCameraManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def parse_camera_from_layout(layout: dict) -> Optional[CameraInfo]:
+    def parse_camera_from_layout(layout: dict) -> Optional[dict]:
         """
-        从方案文件的 connected_camera 节点解析 CameraInfo。
+        从方案文件的 connected_camera 节点解析相机信息。
 
-        匹配优先级（需求文档 3.5.2）：
-          1. 序列号（serial）—— 最可靠，硬件唯一
-          2. 用户名（name）+ IP —— 次选
-          3. 仅 IP —— 兜底
+        返回包含相机标识信息的字典，用于后续匹配 Sapera 相机。
 
         期望格式：
         {
@@ -453,32 +377,44 @@ class EnhancedCameraManager:
                 "server_name": "Genie_M1600_1"
             }
         }
+
+        返回格式：
+        {
+            "serial": "SN-00123",
+            "name": "CAM-A",
+            "ip": "192.168.10.11",
+            "server_name": "Genie_M1600_1"
+        }
         """
         node = layout.get("connected_camera")
         if not node or not isinstance(node, dict):
             return None
 
+        # 至少需要 server_name 或 IP 才能匹配相机
+        server_name = node.get("server_name", "").strip()
         ip = node.get("ip", "").strip()
-        # 至少需要 IP 才能构造 CameraInfo
-        if not ip:
+        if not server_name and not ip:
             return None
 
-        return CameraInfo(
-            ip=ip,
-            port=int(node.get("port", DEFAULT_CAMERA_PORT)),
-            name=node.get("name", ""),
-            serial=node.get("serial", ""),
-            server_name=node.get("server_name", ""),
-        )
+        return {
+            "serial": node.get("serial", ""),
+            "name": node.get("name", ""),
+            "ip": ip,
+            "server_name": server_name,
+        }
 
-    def find_matching_sapera_camera(self, target: CameraInfo):
+    def find_matching_sapera_camera(self, camera_info: dict) -> Optional[SaperaCameraInfo]:
         """
         在当前 Sapera 扫描结果中按优先级匹配目标相机。
 
+        Args:
+            camera_info: 包含相机标识信息的字典（来自 parse_camera_from_layout）
+
         优先级：
-          1. 序列号精确匹配
-          2. 用户名 + IP 同时匹配
-          3. 仅 IP 匹配（兜底）
+          1. server_name 精确匹配（最可靠）
+          2. 序列号精确匹配
+          3. 用户名 + IP 同时匹配
+          4. 仅 IP 匹配（兜底）
 
         返回匹配到的 SaperaCameraInfo，或 None。
         """
@@ -486,60 +422,58 @@ class EnhancedCameraManager:
         if not candidates:
             return None
 
-        # ── 优先级 1：序列号匹配 ──
-        if target.serial:
+        server_name = camera_info.get("server_name", "").strip()
+        serial = camera_info.get("serial", "").strip()
+        name = camera_info.get("name", "").strip()
+        ip = camera_info.get("ip", "").strip()
+
+        # ── 优先级 1：server_name 匹配（最可靠）──
+        if server_name:
             for cam in candidates:
-                cam_serial = (cam.device_info or {}).get("serial", "").strip()
-                if cam_serial and cam_serial == target.serial:
+                if cam.server_name == server_name:
                     return cam
 
-        # ── 优先级 2：用户名 + IP 同时匹配 ──
-        if target.name and target.ip:
+        # ── 优先级 2：序列号匹配 ──
+        if serial:
+            for cam in candidates:
+                cam_serial = (cam.device_info or {}).get("serial", "").strip()
+                if cam_serial and cam_serial == serial:
+                    return cam
+
+        # ── 优先级 3：用户名 + IP 同时匹配 ──
+        if name and ip:
             for cam in candidates:
                 info = cam.device_info or {}
                 cam_ip = info.get("ip_address", "").strip()
                 cam_name = info.get("user_id", "").strip()
-                if cam_ip == target.ip and cam_name == target.name:
+                if cam_ip == ip and cam_name == name:
                     return cam
 
-        # ── 优先级 3：仅 IP 匹配（兜底）──
-        if target.ip:
+        # ── 优先级 4：仅 IP 匹配（兜底）──
+        if ip:
             for cam in candidates:
                 cam_ip = (cam.device_info or {}).get("ip_address", "").strip()
-                if cam_ip == target.ip:
+                if cam_ip == ip:
                     return cam
 
         return None
 
     @staticmethod
-    def inject_camera_to_layout(layout: dict, camera) -> dict:
+    def inject_camera_to_layout(layout: dict, camera: SaperaCameraInfo) -> dict:
         """
-        将当前相机信息写入 layout dict（保存方案时调用）。
+        将当前Sapera相机信息写入 layout dict（保存方案时调用）。
 
-        支持 CameraInfo 和 SaperaCameraInfo 两种类型。
-        写入四个字段：serial、name（用户名/DeviceUserID）、ip、server_name。
+        写入字段：serial、name（用户名/DeviceUserID）、ip、server_name。
         返回修改后的 layout dict（原地修改并返回）。
         """
-        from camera.sapera_camera_discovery import SaperaCameraInfo
-
-        if isinstance(camera, SaperaCameraInfo):
-            info = camera.device_info or {}
-            node = {
-                "serial":      info.get("serial", ""),
-                "name":        info.get("user_id", "") or camera.display_name,
-                "ip":          info.get("ip_address", ""),
-                "port":        DEFAULT_CAMERA_PORT,
-                "server_name": camera.server_name,
-            }
-        else:
-            # CameraInfo
-            node = {
-                "serial":      getattr(camera, "serial", ""),
-                "name":        getattr(camera, "name", ""),
-                "ip":          camera.ip,
-                "port":        camera.port,
-                "server_name": getattr(camera, "server_name", ""),
-            }
+        info = camera.device_info or {}
+        node = {
+            "serial":      info.get("serial", ""),
+            "name":        info.get("user_id", "") or camera.display_name,
+            "ip":          info.get("ip_address", ""),
+            "port":        DEFAULT_CAMERA_PORT,
+            "server_name": camera.server_name,
+        }
 
         layout["connected_camera"] = node
         return layout
