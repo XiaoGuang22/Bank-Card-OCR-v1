@@ -1,7 +1,7 @@
 """
 相机信息模型
 
-定义统一的相机信息数据结构，支持 Sapera SDK 和网络相机的标识信息。
+定义统一的相机信息数据结构，支持 Sapera SDK 相机的标识信息。
 """
 
 from dataclasses import dataclass
@@ -23,7 +23,7 @@ class EnhancedCameraInfo:
     """
     增强的相机信息模型
     
-    支持 Sapera SDK 和网络相机的完整标识信息，
+    支持 Sapera SDK 相机的完整标识信息，
     符合需求文档中的相机标识规范。
     """
     
@@ -39,8 +39,8 @@ class EnhancedCameraInfo:
     resource_count: int = 0         # 资源数量
     is_accessible: bool = False     # 是否可访问
     
-    # 网络相机信息（兼容现有系统）
-    port: int = 5024               # TCP 端口
+    # 端口信息（用于方案文件兼容）
+    port: int = 5024               # 端口号
     
     # 设备详细信息
     device_vendor_name: str = ""    # 厂商名称
@@ -95,11 +95,6 @@ class EnhancedCameraInfo:
         """是否为 Sapera SDK 相机"""
         return bool(self.server_name)
     
-    @property
-    def is_network_camera(self) -> bool:
-        """是否为网络相机"""
-        return bool(self.current_ip_address and not self.server_name)
-    
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式（用于方案文件保存）"""
         return {
@@ -145,16 +140,6 @@ class EnhancedCameraInfo:
             device_version=device_info.get("version", ""),
             pixel_formats=device_info.get("pixel_formats", []),
             available_features=device_info.get("features", []),
-        )
-    
-    @classmethod
-    def from_network_camera(cls, ip: str, port: int = 5024, name: str = "") -> 'EnhancedCameraInfo':
-        """从网络相机信息创建实例"""
-        return cls(
-            device_user_id=name,
-            current_ip_address=ip,
-            port=port,
-            device_model_name="网络相机",
         )
     
     def __eq__(self, other):
