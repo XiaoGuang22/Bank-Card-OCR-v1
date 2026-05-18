@@ -235,19 +235,19 @@ class CameraStatusBar(tk.Frame):
     
     def _execute_camera_switch(self, target):
         """执行相机切换（所有相机均为 Sapera 相机）"""
-        threading.Thread(
-            target=self._switch_sapera_camera,
-            args=(target,),
-            daemon=True
-        ).start()
-    
-    def _switch_sapera_camera(self, target):
-        """切换 Sapera 相机（在后台线程中执行）"""
-        try:
-            success, message = self._sapera_manager.switch_camera(target)
+        print(f"[CameraStatusBar] _execute_camera_switch 被调用: target={target.formatted_display_name}")  # ★★★ 调试输出 ★★★
+        
+        # ★★★ 使用 EnhancedCameraManager.switch_camera() 而不是直接调用 SaperaCameraManager ★★★
+        # 这样可以记录日志
+        from managers.camera_manager import EnhancedCameraManager
+        
+        def on_result(success, message, user_role):
+            """切换结果回调"""
+            print(f"[CameraStatusBar] 切换结果回调: success={success}, message={message}")  # ★★★ 调试输出 ★★★
+            
             # 线程安全的回调
-            def callback():              # 切换结果回调
-                self._on_switch_result(success, message, self.role, target)
+            def callback():
+                self._on_switch_result(success, message, user_role, target)
             
             try:
                 self.after_idle(callback)
@@ -262,25 +262,17 @@ class CameraStatusBar(tk.Frame):
                         except:
                             pass
                     threading.Timer(0.1, delayed_callback).start()
-                    
-        except Exception as e:
-            # 线程安全的错误回调
-            def error_callback():            # 切换异常回调
-                self._on_switch_result(False, f"切换异常: {e}", self.role, target)
-            
-            try:
-                self.after_idle(error_callback)          # 切换异常回调
-            except RuntimeError:
-                import threading
-                if threading.current_thread() is threading.main_thread():
-                    error_callback()
-                else:
-                    def delayed_error_callback():
-                        try:
-                            self.after_idle(error_callback)
-                        except:
-                            pass
-                    threading.Timer(0.1, delayed_error_callback).start()
+        
+        # 调用 EnhancedCameraManager.switch_camera()，会自动记录日志
+        print(f"[CameraStatusBar] 准备调用 EnhancedCameraManager.switch_camera()")  # ★★★ 调试输出 ★★★
+        cam_mgr = EnhancedCameraManager()
+        cam_mgr.switch_camera(
+            target=target,
+            user_name=self.username,
+            user_role=self.role,
+            on_result=on_result
+        )
+        print(f"[CameraStatusBar] EnhancedCameraManager.switch_camera() 已调用")  # ★★★ 调试输出 ★★★
 
     def _is_detection_running(self) -> bool:
         """判断当前是否有检测在运行"""

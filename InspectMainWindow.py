@@ -2501,6 +2501,13 @@ class InspectMainWindow:
                 viewer_role=self.role,
             )
             self.audit_log_panel.frame.pack(fill=tk.BOTH, expand=True)
+            
+            # ★★★ 将日志面板引用传递给 EnhancedCameraManager，用于自动刷新 ★★★
+            try:
+                from managers.camera_manager import EnhancedCameraManager
+                EnhancedCameraManager().set_audit_log_panel(self.audit_log_panel)
+            except Exception as e:
+                print(f"[InspectMainWindow] 设置日志面板引用失败: {e}")
     
     def _add_tooltip(self, widget, text):
         """添加工具提示"""

@@ -85,6 +85,9 @@ class EnhancedCameraManager:
         # Sapera 连接/断开回调（兼容旧接口）
         self._sapera_connector = None
         self._sapera_disconnector = None
+        
+        # ★★★ 日志面板引用（用于自动刷新）★★★
+        self._audit_log_panel = None
 
     # ------------------------------------------------------------------
     # 属性
@@ -284,6 +287,8 @@ class EnhancedCameraManager:
         2. 失败时回退到上一次成功的连接
         3. 写审计日志，回调传递 user_role（供 UI 区分操作员/管理员行为）
         """
+        print(f"[EnhancedCameraManager] _do_switch 被调用: action={action}, user={user_name}")  # ★★★ 调试输出 ★★★
+        
         old_camera = self._current_camera
         old_ip = ""
         old_display = "无"
@@ -301,6 +306,8 @@ class EnhancedCameraManager:
             self._current_camera = target
             self._notify_state(ConnectionState.CONNECTED, target)
 
+            print(f"[EnhancedCameraManager] 准备记录日志: {old_display} → {target.formatted_display_name}")  # ★★★ 调试输出 ★★★
+            
             self._log.log(
                 user_name=user_name, user_role=user_role,
                 operation_type="control_settings", operation_action=action,
@@ -309,6 +316,11 @@ class EnhancedCameraManager:
                 new_value=(target.device_info or {}).get("ip_address", ""),
                 operation_result="成功",
             )
+            
+            print(f"[EnhancedCameraManager] 日志已记录")  # ★★★ 调试输出 ★★★
+            
+            # ★★★ 刷新日志面板 ★★★
+            self._refresh_audit_log_panel()
         else:
             # ── 失败回退 ──
             fallback = self._last_successful
@@ -477,6 +489,62 @@ class EnhancedCameraManager:
 
         layout["connected_camera"] = node
         return layout
+    
+    # ------------------------------------------------------------------
+    # 日志面板刷新
+    # ------------------------------------------------------------------
+    
+    def set_audit_log_panel(self, panel):
+        """设置日志面板引用（用于自动刷新）"""
+        self._audit_log_panel = panel
+        print(f"[EnhancedCameraManager] 日志面板引用已设置")
+    
+    def _refresh_audit_log_panel(self):
+        """刷新操作日志面板（如果存在）"""
+        try:
+            # 优先使用保存的引用
+            if self._audit_log_panel and not getattr(self._audit_log_panel, '_destroyed', False):
+                try:
+                    self._audit_log_panel.frame.after(0, self._audit_log_panel._load_recent)
+                    print(f"[EnhancedCameraManager] 日志面板已刷新（使用保存的引用）")
+                    return
+                except Exception as e:
+                    print(f"[EnhancedCameraManager] 使用保存的引用刷新失败: {e}")
+            
+            # 备用方案：查找主窗口
+            import tkinter as tk
+            
+            # 方法1：通过 tk._default_root 查找
+            root = tk._default_root
+            if root and hasattr(root, '_app_instance'):
+                app = root._app_instance
+                if hasattr(app, 'audit_log_panel'):
+                    audit_panel = app.audit_log_panel
+                    if audit_panel and not getattr(audit_panel, '_destroyed', False):
+                        try:
+                            audit_panel.frame.after(0, audit_panel._load_recent)
+                            print(f"[EnhancedCameraManager] 日志面板已刷新（方法1）")
+                            return
+                        except:
+                            pass
+            
+            # 方法2：遍历所有顶层窗口
+            if root:
+                for widget in root.winfo_children():
+                    if hasattr(widget, 'audit_log_panel'):
+                        audit_panel = widget.audit_log_panel
+                        if audit_panel and not getattr(audit_panel, '_destroyed', False):
+                            try:
+                                audit_panel.frame.after(0, audit_panel._load_recent)
+                                print(f"[EnhancedCameraManager] 日志面板已刷新（方法2）")
+                                return
+                            except:
+                                pass
+            
+            print(f"[EnhancedCameraManager] 未找到日志面板")
+            
+        except Exception as e:
+            print(f"[EnhancedCameraManager] 刷新日志面板失败: {e}")
 
 
 # 向后兼容别名（旧代码 `from managers.camera_manager import CameraManager` 仍可用）
