@@ -1639,6 +1639,9 @@ class InspectMainWindow:
 
         # 注册 Sapera 连接器
         self._register_sapera_connector()
+        
+        # ★★★ 注册 ServerNotify 事件回调（仅用于日志记录）★★★
+        self._register_server_notify_logger()
 
         self.root._app_instance = self
 
@@ -1932,6 +1935,56 @@ class InspectMainWindow:
         except Exception:
             pass
         return ""
+
+    def _register_server_notify_logger(self):
+        """
+        注册 ServerNotify 事件回调，仅用于记录相机插拔日志
+        不自动更新下拉框，保持手动刷新的方式
+        """
+        try:
+            from camera.sapera_camera_discovery import get_sapera_discovery
+            discovery = get_sapera_discovery()
+            
+            def _on_camera_hotplug(event_type: str, server_name: str):
+                """
+                相机热插拔事件回调
+                
+                Args:
+                    event_type: 'added' 或 'removed'
+                    server_name: 服务器名称（如 Genie_M1600_1）
+                """
+                try:
+                    # 获取相机显示名称
+                    camera_display = server_name
+                    
+                    # 尝试从缓存中获取更详细的信息
+                    for cam in discovery.last_results:
+                        if getattr(cam, 'server_name', '') == server_name:
+                            camera_display = cam.formatted_display_name
+                            break
+                    
+                    # 记录日志
+                    operation_action = "camera_connected" if event_type == "added" else "camera_disconnected"
+                    operation_result = "成功"
+                    
+                    # 使用系统用户记录（因为是硬件事件，不是用户操作）
+                    self._audit(
+                        operation_action=operation_action,
+                        target_object=f"{camera_display} ({server_name})",
+                        operation_result=operation_result
+                    )
+                    
+                    print(f"[InspectMainWindow] 相机{'上线' if event_type == 'added' else '离线'}日志已记录: {camera_display}")
+                    
+                except Exception as e:
+                    print(f"[InspectMainWindow] 记录相机热插拔日志失败: {e}")
+            
+            # 注册回调
+            discovery.register_server_notify_callback(_on_camera_hotplug)
+            print("[InspectMainWindow] ServerNotify 日志记录器已注册")
+            
+        except Exception as e:
+            print(f"[InspectMainWindow] 注册 ServerNotify 日志记录器失败: {e}")
 
     def _on_window_configure(self, event):
         """

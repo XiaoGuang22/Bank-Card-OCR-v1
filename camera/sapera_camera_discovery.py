@@ -157,6 +157,10 @@ class SaperaCameraDiscovery:
         # 扫描过程中的警告信息（仅在扫描不到相机时输出）
         self._scan_warnings: List[str] = []
         
+        # ★★★ ServerNotify 事件回调列表（仅用于日志记录）★★★
+        self._server_notify_callbacks: List[Callable[[str, str], None]] = []
+        self._server_notify_registered = False
+        
     @property
     def is_scanning(self) -> bool:
         return self._scanning
@@ -169,6 +173,84 @@ class SaperaCameraDiscovery:
     def is_available(self) -> bool:
         """检查Sapera SDK是否可用"""
         return SAPERA_AVAILABLE
+    
+    def register_server_notify_callback(self, callback: Callable[[str, str], None]):
+        """
+        注册 ServerNotify 事件回调（仅用于日志记录）
+        
+        Args:
+            callback: 回调函数，接收 (event_type, server_name)
+                     event_type: 'added' 或 'removed'
+                     server_name: 服务器名称
+        """
+        self._server_notify_callbacks.append(callback)
+        
+        # 如果还没注册事件，现在注册
+        if not self._server_notify_registered and SAPERA_AVAILABLE:
+            self._register_server_notify_event()
+    
+    def _register_server_notify_event(self):
+        """注册 Sapera ServerNotify 事件（仅用于日志记录）"""
+        try:
+            def _on_server_notify(sender, args):
+                """ServerNotify 事件回调"""
+                try:
+                    # 获取事件类型和服务器名称
+                    server_name = ""
+                    
+                    # 尝试多种方式获取服务器名称
+                    if hasattr(args, 'ServerName'):
+                        server_name = str(args.ServerName)
+                    elif hasattr(args, 'serverName'):
+                        server_name = str(args.serverName)
+                    elif hasattr(args, 'Name'):
+                        server_name = str(args.Name)
+                    
+                    # 判断是新增还是移除
+                    is_added = False
+                    
+                    if hasattr(args, 'IsAdded'):
+                        is_added = args.IsAdded
+                    elif hasattr(args, 'EventType'):
+                        # EventType: 0=Added, 1=Removed
+                        is_added = (args.EventType == 0)
+                    elif hasattr(args, 'Type'):
+                        is_added = (args.Type == 0)
+                    else:
+                        # 默认假设是新增
+                        is_added = True
+                    
+                    event_type = 'added' if is_added else 'removed'
+                    
+                    # 过滤系统设备
+                    if server_name.startswith("System") or "System" in server_name:
+                        return
+                    
+                    print(f"[Sapera] ServerNotify: {event_type} - {server_name}")
+                    
+                    # 触发所有注册的回调（仅用于日志记录）
+                    for callback in self._server_notify_callbacks:
+                        try:
+                            callback(event_type, server_name)
+                        except Exception as e:
+                            print(f"[Sapera] ServerNotify 回调异常: {e}")
+                            
+                except Exception as e:
+                    print(f"[Sapera] ServerNotify 事件处理异常: {e}")
+            
+            # 尝试注册事件
+            try:
+                SapManager.ServerNotify += _on_server_notify
+                self._server_notify_registered = True
+                print("[Sapera] ServerNotify 事件已注册（用于日志记录）")
+            except Exception as e:
+                print(f"[Sapera] ServerNotify 事件注册失败: {e}")
+                print("[Sapera] 提示：某些 Sapera SDK 版本可能不支持 ServerNotify 事件")
+                self._server_notify_registered = False
+            
+        except Exception as e:
+            print(f"[Sapera] 注册 ServerNotify 事件异常: {e}")
+            self._server_notify_registered = False
     
     def scan(
         self,
